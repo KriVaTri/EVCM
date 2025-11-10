@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import voluptuous as vol
-from typing import Dict, Optional
+from typing import Optional, Dict
 import logging
 
 from homeassistant import config_entries
@@ -22,8 +22,13 @@ from .const import (
     CONF_CHARGING_ENABLE,
     CONF_LOCK_SENSOR,
     CONF_CURRENT_SETTING,
+    # Legacy compat flag
     CONF_WALLBOX_THREE_PHASE,
     DEFAULT_WALLBOX_THREE_PHASE,
+    # Supply profile
+    CONF_SUPPLY_PROFILE,
+    SUPPLY_PROFILES,
+    # Thresholds
     CONF_ECO_ON_UPPER,
     CONF_ECO_ON_LOWER,
     CONF_ECO_OFF_UPPER,
@@ -36,13 +41,16 @@ from .const import (
     MAX_THRESHOLD_VALUE,
     MIN_BAND_SINGLE_PHASE,
     MIN_BAND_THREE_PHASE,
+    # Timers and intervals
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
     CONF_SUSTAIN_SECONDS,
     DEFAULT_SUSTAIN_SECONDS,
     SUSTAIN_MAX_SECONDS,
+    # Device + optional
     CONF_DEVICE_ID,
     CONF_EV_BATTERY_LEVEL,
+    # Current limit
     CONF_MAX_CURRENT_LIMIT_A,
     ABS_MIN_CURRENT_A,
     ABS_MAX_CURRENT_A,
@@ -51,10 +59,9 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-# ---------------- Helpers ----------------
-
 def _merged(entry: config_entries.ConfigEntry) -> dict:
     return {**entry.data, **entry.options}
+
 
 def _normalize_number(raw) -> float:
     if isinstance(raw, (int, float)):
@@ -69,6 +76,7 @@ def _normalize_number(raw) -> float:
     if tmp and ((tmp.startswith("-") and tmp[1:].isdigit()) or tmp.isdigit()):
         s = tmp
     return float(s)
+
 
 def _validate_thresholds(data: dict, three_phase: bool) -> dict[str, str]:
     errors: dict[str, str] = {}
@@ -110,6 +118,7 @@ def _validate_thresholds(data: dict, three_phase: bool) -> dict[str, str]:
     if off_lo >= off_up:
         errors[CONF_ECO_OFF_LOWER] = "lower_above_upper"
     return errors
+
 
 def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     num_sel_w = {
@@ -164,7 +173,7 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     add_ent(CONF_LOCK_SENSOR, "lock")
     add_ent(CONF_CURRENT_SETTING, "number")
 
-    evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL)
+    evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL, "")
     if evsoc_default:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL, default=evsoc_default)] = selector(
             {"entity": {"domain": "sensor"}}
@@ -172,16 +181,13 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     else:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL)] = selector({"entity": {"domain": "sensor"}})
 
-    # Max current
     fields[vol.Required(CONF_MAX_CURRENT_LIMIT_A, default=defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))] = selector(num_sel_a)
 
-    # Thresholds
     fields[vol.Required(CONF_ECO_ON_UPPER, default=defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_ON_LOWER, default=defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_UPPER, default=defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
-    # Scan + sustain
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
             "number": {
@@ -198,8 +204,6 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     return vol.Schema(fields)
 
 
-# ---------------- CONFIG FLOW ----------------
-
 class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
@@ -213,7 +217,14 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Optional(CONF_NAME, default=""): str,
                 vol.Required(CONF_GRID_SINGLE, default=False): selector({"boolean": {}}),
-                vol.Required(CONF_WALLBOX_THREE_PHASE, default=DEFAULT_WALLBOX_THREE_PHASE): selector({"boolean": {}}),
+                vol.Required(CONF_SUPPLY_PROFILE, default="eu_1ph_230"): selector({
+                    "select": {
+                        "options": [
+                            {"value": key, "label": meta["label"]}
+                            for key, meta in SUPPLY_PROFILES.items()
+                        ]
+                    }
+                }),
             }
         )
         if user_input is None:
@@ -222,7 +233,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._step1 = {
             CONF_NAME: (user_input.get(CONF_NAME) or "").strip(),
             CONF_GRID_SINGLE: bool(user_input.get(CONF_GRID_SINGLE, False)),
-            CONF_WALLBOX_THREE_PHASE: bool(user_input.get(CONF_WALLBOX_THREE_PHASE, DEFAULT_WALLBOX_THREE_PHASE)),
+            CONF_SUPPLY_PROFILE: user_input.get(CONF_SUPPLY_PROFILE, "eu_1ph_230"),
         }
         self._s_defaults = {
             CONF_GRID_POWER: "",
@@ -256,7 +267,9 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_sensors(self, user_input=None):
         assert self._step1 is not None
         grid_single = bool(self._step1.get(CONF_GRID_SINGLE, False))
-        three_phase = bool(self._step1.get(CONF_WALLBOX_THREE_PHASE, DEFAULT_WALLBOX_THREE_PHASE))
+        profile_key = self._step1.get(CONF_SUPPLY_PROFILE, "eu_1ph_230")
+        profile_meta = SUPPLY_PROFILES.get(profile_key, SUPPLY_PROFILES["eu_1ph_230"])
+        three_phase = bool(profile_meta.get("phases", 1) == 3)
 
         if self._s_defaults is None:
             self._s_defaults = {}
@@ -270,12 +283,9 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         for k, v in (user_input or {}).items():
-            if k == CONF_EV_BATTERY_LEVEL and (not v):
-                self._s_defaults[k] = ""
-            else:
-                self._s_defaults[k] = v
+            self._s_defaults[k] = v
 
-        # Validate thresholds
+        # Validatie thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER),
@@ -318,14 +328,15 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         data = {**self._step1, **self._s_defaults}
+
         if grid_single:
             data.pop(CONF_GRID_IMPORT, None)
             data.pop(CONF_GRID_EXPORT, None)
         else:
             data.pop(CONF_GRID_POWER, None)
 
-        if not data.get(CONF_EV_BATTERY_LEVEL):
-            data.pop(CONF_EV_BATTERY_LEVEL, None)
+        # Legacy compat
+        data[CONF_WALLBOX_THREE_PHASE] = bool(profile_meta.get("phases", 1) == 3)
 
         if self._selected_device:
             data[CONF_DEVICE_ID] = self._selected_device
@@ -339,12 +350,11 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return EVChargeManagerOptionsFlow(config_entry)
 
 
-# ---------------- OPTIONS FLOW ----------------
-
 try:
     OptionsFlowBase = config_entries.OptionsFlowWithConfigEntry
 except AttributeError:
     OptionsFlowBase = config_entries.OptionsFlow
+
 
 class EVChargeManagerOptionsFlow(OptionsFlowBase):
     VERSION = 1
@@ -356,25 +366,32 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             super().__init__()
             self.config_entry = config_entry
         self._grid_single: bool | None = None
-        self._three_phase: bool | None = None
+        self._supply_profile: str | None = None
         self._values: dict | None = None
         self._selected_device: Optional[str] = None
 
     async def async_step_init(self, user_input=None):
         eff = _merged(self.config_entry)
         current_single = bool(eff.get(CONF_GRID_SINGLE, False))
-        three_phase = bool(eff.get(CONF_WALLBOX_THREE_PHASE, DEFAULT_WALLBOX_THREE_PHASE))
+        current_profile = eff.get(CONF_SUPPLY_PROFILE, "eu_1ph_230")
         schema = vol.Schema(
             {
                 vol.Required(CONF_GRID_SINGLE, default=current_single): selector({"boolean": {}}),
-                vol.Required(CONF_WALLBOX_THREE_PHASE, default=three_phase): selector({"boolean": {}}),
+                vol.Required(CONF_SUPPLY_PROFILE, default=current_profile): selector({
+                    "select": {
+                        "options": [
+                            {"value": key, "label": meta["label"]}
+                            for key, meta in SUPPLY_PROFILES.items()
+                        ]
+                    }
+                }),
             }
         )
         name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
         if user_input is None:
             return self.async_show_form(step_id="init", data_schema=schema, description_placeholders={"name": name})
         self._grid_single = bool(user_input.get(CONF_GRID_SINGLE, current_single))
-        self._three_phase = bool(user_input.get(CONF_WALLBOX_THREE_PHASE, three_phase))
+        self._supply_profile = user_input.get(CONF_SUPPLY_PROFILE, current_profile)
         return await self.async_step_device()
 
     async def async_step_device(self, user_input=None):
@@ -393,9 +410,9 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
     async def async_step_sensors(self, user_input=None):
         eff = _merged(self.config_entry)
         grid_single = self._grid_single if self._grid_single is not None else bool(eff.get(CONF_GRID_SINGLE, False))
-        three_phase = self._three_phase if self._three_phase is not None else bool(
-            eff.get(CONF_WALLBOX_THREE_PHASE, DEFAULT_WALLBOX_THREE_PHASE)
-        )
+        profile_key = self._supply_profile if self._supply_profile is not None else eff.get(CONF_SUPPLY_PROFILE, "eu_1ph_230")
+        profile_meta = SUPPLY_PROFILES.get(profile_key, SUPPLY_PROFILES["eu_1ph_230"])
+        three_phase = bool(profile_meta.get("phases", 1) == 3)
 
         if self._values is None:
             self._values = {
@@ -424,12 +441,9 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
 
         for k, v in (user_input or {}).items():
-            if k == CONF_EV_BATTERY_LEVEL and not v:
-                self._values[k] = ""
-            else:
-                self._values[k] = v
+            self._values[k] = v
 
-        # Validate thresholds
+        # Validatie thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER),
@@ -454,7 +468,7 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
 
-        # Validate max current
+        # Max current
         try:
             max_a = int(self._values.get(CONF_MAX_CURRENT_LIMIT_A, 16))
             if max_a < ABS_MIN_CURRENT_A or max_a > ABS_MAX_CURRENT_A:
@@ -469,15 +483,14 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
 
         new_opts = dict(self.config_entry.options)
         new_opts[CONF_GRID_SINGLE] = bool(grid_single)
-        new_opts[CONF_WALLBOX_THREE_PHASE] = bool(three_phase)
+
+        new_opts[CONF_SUPPLY_PROFILE] = profile_key
+        new_opts[CONF_WALLBOX_THREE_PHASE] = bool(profile_meta.get("phases", 1) == 3)
 
         if self._selected_device:
             new_opts[CONF_DEVICE_ID] = self._selected_device
 
         for k, v in self._values.items():
-            if k == CONF_EV_BATTERY_LEVEL and not v:
-                new_opts.pop(k, None)
-            else:
-                new_opts[k] = v
+            new_opts[k] = v
 
         return self.async_create_entry(title="", data=new_opts)
