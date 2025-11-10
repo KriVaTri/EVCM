@@ -1,5 +1,7 @@
 # EVCM — Smart EV Charging Manager for Home Assistant
 
+[![GitHub release (latest SemVer including pre-releases)](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases)](https://github.com/KriVaTri/evcm/releases)
+
 EVCM is a Home Assistant custom integration to intelligently control one or more EV wallboxes based on:
 - Net power at the grid connection (export/import)
 - Hysteresis thresholds (ECO ON vs ECO OFF profiles)
