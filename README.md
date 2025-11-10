@@ -43,7 +43,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
 - ECO OFF thresholds: an alternate band used when ECO mode is OFF.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
-- Manual mode: manual override; no dynamic hysteresis regulation, but planner/SOC/priority still gate starting.
+- Manual mode: manual override; no dynamic hysteresis regulation, but planner/SoC/priority still gate starting.
 - Priority Charging: when ON, only the “current priority” entry is allowed to regulate.
 - Order: global order of entries; used to pick the next/first candidate in priority mode.
 - Preferred: internal pointer to the top-of-order entry; avoids race conditions on reconnect.
