@@ -20,6 +20,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [2. Key features](#2-key-features)  
 - [3. Installation](#3-installation)  
 - [4. Configuration flow](#4-configuration-flow)  
+- [Supply Profiles and Net Power Target](#supply-profiles-and-net-power-target)
 - [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
 - [6. Priority charging behavior](#6-priority-charging-behavior)  
 - [7. Priority order numbering](#7-priority-order-numbering)  
@@ -39,7 +40,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 ## 1) Concepts and terminology
 
-- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/import sensors are used.
+- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/impor[...]
 - ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
 - ECO OFF thresholds: an alternate band used when ECO mode is OFF.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
@@ -123,6 +124,46 @@ All numeric inputs use integer steps and input boxes.
 
 ---
 
+## Supply Profiles and Net Power Target
+
+EVCM now offers selectable supply/voltage profiles and an optional Net Power Target for finer current regulation.
+
+Supply profiles (select during setup/options):
+- 1‑phase 230V/240V (`eu_1ph_230`/`na_1ph_240`)
+  - Phases: 1, phase voltage ≈ 235 V
+  - Min power at 6 A ≈ 1.41 kW
+  - Regulation thresholds: export_inc=240 W, import_dec=70 W
+- 3‑phase 400V (`eu_3ph_400`)
+  - Phases: 3, phase voltage ≈ 230 V (400 V line-to-line)
+  - Min power at 6 A ≈ 4.14 kW
+  - Regulation thresholds: export_inc=700 W, import_dec=200 W
+- 3‑phase 208V (`na_3ph_208`)
+  - Phases: 3, phase voltage ≈ 120 V (208 V line-to-line)
+  - Min power at 6 A ≈ 2.16 kW
+  - Regulation thresholds: export_inc=370 W, import_dec=105 W
+- 1‑phase 200V (`jp_1ph_200`)
+  - Phases: 1, phase voltage ≈ 200 V
+  - Min power at 6 A ≈ 1.20 kW
+  - Regulation thresholds: export_inc=205 W, import_dec=60 W
+- 1‑phase 120V (Level 1) (`na_1ph_120`)
+  - Phases: 1, phase voltage ≈ 120 V
+  - Min power at 6 A ≈ 0.72 kW
+  - Regulation thresholds: export_inc=122 W, import_dec=35 W
+
+Net Power Target (fine regulation center):
+- What it is: a configurable grid balance target (in W) that biases the +/−1 A current adjustments. Default is 0 W.
+- How it works:
+  - Deviation = measured_net_power − net_power_target.
+  - Increase current (+1 A) when deviation ≥ export_inc_threshold (profile-dependent).
+  - Decrease current (−1 A) when deviation ≤ −import_dec_threshold.
+- Hysteresis (ECO ON/OFF upper/lower) is unchanged and remains absolute; it still governs start/pause decisions. The target only affects fine‑grain current steps while charging.
+- Practical examples:
+  - Target = +1000 W: the charger will try to keep exporting ~1 kW; current increases only when net export exceeds target by the “export_inc” threshold.
+  - Target = −500 W: tolerates ~500 W import before stepping current down.
+- Availability: exposed as a Number entity per entry (“net power target”) and persisted; can be changed live without restarting.
+
+---
+
 ## 5) Mode switches (per entry)
 
 EVCM creates a set of switches per configured entry:
@@ -174,7 +215,7 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO ON vs ECO OFF)
+## 8) Hysteresis thresholds (ECO vs OFF)
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta ≥ 5 kW 3 phase wallbox and ≥ 2 kW 1 phase wallbox)
