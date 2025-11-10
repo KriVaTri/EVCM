@@ -307,7 +307,7 @@ The timers are canceled/reset when conditions no longer apply.
 | Auto-start            | Yes (when conditions allow)       | One-shot checks only (enable may be turned on/off)  |
 | Priority gating       | Yes (if Priority Charging is ON)  | Yes (for initial start allowance)                   |
 
-Manual is intended for “force charging” scenarios but still respects planner/SOC for starting and priority gating for allowance.
+Manual is intended for “force charging” scenarios but still respects planner/SoC for starting and priority gating for allowance.
 
 ---
 
@@ -334,7 +334,7 @@ Per entry:
   - `<Name> Start/Stop Reset`
 - Numbers
   - `<Name> priority order` (integer, 1‑based)
-  - `<Name> SOC limit` (integer, unit “%”)
+  - `<Name> SoC limit` (integer, unit “%”)
 - DateTime
   - `<Name> planner start`
   - `<Name> planner stop`
