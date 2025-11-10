@@ -1,0 +1,19 @@
+name: Validate with hassfest
+
+on:
+  push:
+    paths:
+      - "custom_components/**"
+      - "hacs.json"
+      - ".github/workflows/hassfest.yml"
+  pull_request:
+    paths:
+      - "custom_components/**"
+      - "hacs.json"
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@v1
