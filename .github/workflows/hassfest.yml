@@ -1,4 +1,4 @@
-name: Validate with hassfest
+name: Validate with Hassfest
 
 on:
   push:
@@ -10,10 +10,16 @@ on:
     paths:
       - "custom_components/**"
       - "hacs.json"
+  workflow_dispatch:
 
 jobs:
   hassfest:
+    name: Hassfest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run hassfest
+        uses: home-assistant/actions/hassfest@v1
+        # Als 'v1' niet werkt in jouw omgeving, gebruik:
+        # uses: home-assistant/actions/hassfest@main
