@@ -147,7 +147,7 @@ When Priority Charging is ON:
 - On disconnect or SoC gating of the current entry, EVCM advances to the next eligible entry by order.
 - On cable connect:
   - If the preferred entry (top-of-order) connects, preemptive restore applies when appropriate.
-  - “Top-of-order takeover”: if an entry is order[0] and connects, it becomes current priority (subject to the latest logic and preferred).
+  - “Top-of-order takeover”: if an entry is order 1 and connects, it becomes current priority (subject to the latest logic and preferred).
 - On order changes:
   - UI is refreshed immediately.
   - Preferred is updated to the top-of-order to prevent stale restores.
