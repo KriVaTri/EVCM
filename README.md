@@ -215,7 +215,7 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO vs OFF)
+## 8) Hysteresis thresholds (ECO ON vs ECO OFF)
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta depending on supply voltage / phase profile)
