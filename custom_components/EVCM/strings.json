@@ -7,7 +7,7 @@
         "description": "Basic setup",
         "data": {
           "name": "Name",
-          "grid_single": "Single net power sensor (export/import combined)",
+          "grid_single": "Single net power sensor (export + import)",
           "supply_profile": "Supply voltage / phase profile"
         }
       },
@@ -57,7 +57,7 @@
         "title": "Edit: basic flags",
         "description": "Adjust grid mode and supply profile for:\n{name}",
         "data": {
-          "grid_single": "Single net power sensor",
+          "grid_single": "Single net power sensor (export + import)",
           "supply_profile": "Supply voltage / phase profile"
         }
       },
