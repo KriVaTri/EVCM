@@ -51,8 +51,8 @@ class _PlannerDateTime(DateTimeEntity):
         self._entry_id = entry_id
         self._is_start = is_start
         self._attr_unique_id = f"{DOMAIN}_{entry_id}_planner_{'start' if is_start else 'stop'}"
-        self._attr_name = friendly_name  # UI name (no evcm)
-        self.entity_id = f"datetime.{object_id}"  # enforce entity_id with evcm prefix
+        self._attr_name = friendly_name
+        self.entity_id = f"datetime.{object_id}"
 
     @property
     def device_info(self):
