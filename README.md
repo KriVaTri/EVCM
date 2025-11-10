@@ -181,7 +181,7 @@ Two bands are defined:
 - ECO OFF band (used when ECO = OFF): ECO OFF upper and ECO OFF lower
 
 Behavior outline:
-- If not charging and net ≥ upper → start (subject to planner/SOC/priority)
+- If not charging and net ≥ upper → start (subject to planner/SoC/priority)
 - If charging and net < lower → start the below-lower sustain timer; pause when the timer elapses
 - Otherwise, keep/reset timers accordingly
 
