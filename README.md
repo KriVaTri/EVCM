@@ -165,7 +165,7 @@ Design guarantee:
 
 For each entry EVCM provides a Number entity:
 - Name: “<Entry Name> priority order”
-- Type: box input (no slider), 1‑based integer
+- Type: box input, 1‑based integer
 - Changing this value moves the entry within the global order
 - All Priority Order numbers update immediately (no duplicate numbers)
 - A global event is fired on each order change so the UI and entities refresh instantly, even with Priority Charging OFF
