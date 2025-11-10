@@ -1,18 +1,41 @@
-
-name: Lint
+name: lint
 
 on:
   push:
+    paths:
+      - "custom_components/evcm/**"
+      - "pyproject.toml"
+      - ".github/workflows/lint.yml"
   pull_request:
-
-permissions:
-  contents: read
+    paths:
+      - "custom_components/evcm/**"
+      - "pyproject.toml"
+      - ".github/workflows/lint.yml"
+  workflow_dispatch:
 
 jobs:
-  ruff:
+  ruff-mypy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          args: check
+            python-version: "3.12"
+
+      - name: Install dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Ruff Lint
+        run: ruff check .
+
+      - name: Ruff Format (verify only)
+        run: ruff format --check .
+
+      - name: Mypy
+        run: mypy custom_components/evcm
