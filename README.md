@@ -34,7 +34,6 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [16. Unknown/unavailable detection](#16-unknownunavailable-detection)  
 - [17. Common scenarios](#17-common-scenarios)  
 - [18. Troubleshooting](#18-troubleshooting)  
-- [19. Development](#19-development)
 
 ---
 
@@ -344,28 +343,6 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 | Pauses too quickly | Sustain = 0 | Increase `sustain_seconds` |
 
 Enable debug logs for `custom_components.evcm` if you need deeper insight.
-
----
-
-## 19) Development
-
-Recommended tooling:
-```bash
-# Lint & format with Ruff
-ruff check .
-ruff format .
-
-# Type-check with mypy
-mypy custom_components/evcm
-
-# Run tests (if present)
-pytest
-```
-
-Contribution tips:
-- Keep priority and order code free of unintended side-effects (do not mutate order when changing current).
-- Add tests for priority advance, SoC gating, planner window gating, and hysteresis.
-- Use the bus event `evcm_priority_refresh` for cross-entity refreshes.
 
 ---
 
