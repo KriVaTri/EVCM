@@ -1,7 +1,5 @@
 # EVCM — Smart EV Charging Manager for Home Assistant
 
-[![GitHub release (latest SemVer including pre-releases)](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases)](https://github.com/KriVaTri/evcm/releases)
-
 EVCM is a Home Assistant custom integration to intelligently control one or more EV wallboxes based on:
 - Net power at the grid connection (export/import)
 - Hysteresis thresholds (ECO vs OFF profiles)
@@ -18,25 +16,25 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 ## Table of contents
 
-1. Concepts and terminology  
-2. Key features  
-3. Installation  
-4. Configuration flow  
-5. Mode switches (per entry)  
-6. Priority charging behavior  
-7. Priority order numbering  
-8. Hysteresis thresholds (ECO vs OFF)  
-9. Automatic regulation (regulation loop)  
-10. SoC limit  
-11. Planner window (start/stop datetimes)  
-12. Sustain timers (below-lower / no-data)  
-13. Manual vs Start/Stop modes  
-14. Events and bus signals  
-15. Entities overview  
-16. Unknown/unavailable detection  
-17. Common scenarios  
-18. Troubleshooting  
-19. Development
+- [1. Concepts and terminology](#1-concepts-and-terminology)  
+- [2. Key features](#2-key-features)  
+- [3. Installation](#3-installation)  
+- [4. Configuration flow](#4-configuration-flow)  
+- [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
+- [6. Priority charging behavior](#6-priority-charging-behavior)  
+- [7. Priority order numbering](#7-priority-order-numbering)  
+- [8. Hysteresis thresholds (ECO vs OFF)](#8-hysteresis-thresholds-eco-vs-off)  
+- [9. Automatic regulation (regulation loop)](#9-automatic-regulation-regulation-loop)  
+- [10. SoC limit](#10-soc-limit)  
+- [11. Planner window (start/stop datetimes)](#11-planner-window-startstop-datetimes)  
+- [12. Sustain timers (below-lower / no-data)](#12-sustain-timers-below-lower--no-data)  
+- [13. Manual vs Start/Stop modes](#13-manual-vs-startstop-modes)  
+- [14. Events and bus signals](#14-events-and-bus-signals)  
+- [15. Entities overview](#15-entities-overview)  
+- [16. Unknown/unavailable detection](#16-unknownunavailable-detection)  
+- [17. Common scenarios](#17-common-scenarios)  
+- [18. Troubleshooting](#18-troubleshooting)  
+- [19. Development](#19-development)
 
 ---
 
