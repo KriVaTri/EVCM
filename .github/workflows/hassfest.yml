@@ -1,19 +1,28 @@
-name: Validate with hassfest
+name: HassFest
 
 on:
   push:
-    paths:
-      - "custom_components/**"
-      - "hacs.json"
-      - ".github/workflows/hassfest.yml"
   pull_request:
-    paths:
-      - "custom_components/**"
-      - "hacs.json"
+  workflow_dispatch:
 
 jobs:
-  hassfest:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: home-assistant/actions/hassfest@v1
+
+      # Debug what the runner actually has
+      - name: Show workspace and integration paths
+        run: |
+          echo "Workspace: $PWD"
+          ls -la
+          echo "List custom_components:"
+          ls -la custom_components || true
+          echo "List custom_components/evcm:"
+          ls -la custom_components/evcm || true
+
+      # Run HassFest via container action (no repo action refs involved)
+      - name: HassFest (container)
+        uses: docker://ghcr.io/home-assistant/hassfest:latest
+        with:
+          args: --integration-path /github/workspace/custom_components/evcm
