@@ -1,7 +1,98 @@
-[tool.ruff]
-line-length = 120
-target-version = "py311"
-exclude = ["custom_components/evcm/translations"]
+[project]
+name = "evcm"
+version = "0.3.0"
+description = "EVCM - Home Assistant custom integration for smart EV charging management."
+readme = "README.md"
+authors = [
+  { name = "KriVaTri", email = "" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = ["home-assistant", "ev", "charging", "energy", "smart-charging"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Framework :: Home Assistant",
+  "Topic :: Home Automation"
+]
 
-[tool.ruff.lint]
-select = ["E", "F", "W"]
+# Runtime dependencies (leeg: custom component gebruikt HA core)
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0",
+  "mypy>=1.10.0",
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.5",
+  "homeassistant>=2024.9.0",
+  "types-setuptools",
+  "types-python-dateutil",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+indent-width = 4
+exclude = [
+  "build",
+  "dist",
+  ".venv",
+  "venv",
+  "scripts",
+]
+# Select is implicit via rulesets; we fine-tune.
+lint.select = ["E", "F", "W", "B", "I", "UP", "SIM", "RET"]
+lint.ignore = [
+  "E501",  # line length (we enforce but ignore style errors to reduce noise)
+  "B905",  # zip strictness (optioneel)
+]
+extend-safe-fixes = true
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"
+indent-style = "space"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+force-single-line = false
+known-first-party = ["custom_components"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = True
+warn_unused_ignores = True
+warn_unreachable = True
+warn_redundant_casts = True
+warn_return_any = True
+disallow_untyped_defs = True
+disallow_incomplete_defs = True
+no_implicit_optional = True
+show_error_codes = True
+strict_equality = True
+exclude = [
+  "build",
+  "dist",
+  "tests/fixtures",
+]
+ignore_missing_imports = True
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["custom_components.evcm"]
+
+[tool.setuptools.package-data]
+"custom_components.evcm" = [
+  "manifest.json",
+  "translations/*.json",
+  "strings.json",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
