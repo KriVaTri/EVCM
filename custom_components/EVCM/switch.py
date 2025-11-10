@@ -20,6 +20,7 @@ from .priority import (
     async_set_priority,
 )
 
+MANUFACTURER = "KriVaTri"
 
 def _base_name(entry: ConfigEntry) -> str:
     name = (entry.data.get(CONF_NAME) or entry.title or "EVCM").strip()
