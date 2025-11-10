@@ -177,8 +177,8 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 ## 8) Hysteresis thresholds (ECO ON vs ECO OFF)
 
 Two bands are defined:
-- ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta ≥ 5000 W 3 phase wallbox and ≥ 2000 W 1 phase wallbox)
-- ECO OFF band (used when ECO = OFF): ECO OFF upper and ECO OFF lower (Delta ≥ 5000 W 3 phase wallbox and ≥ 2000 W 1 phase wallbox)
+- ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta ≥ 5 kW 3 phase wallbox and ≥ 2 kW 1 phase wallbox)
+- ECO OFF band (used when ECO = OFF): ECO OFF upper and ECO OFF lower (Delta ≥ 5 kW 3 phase wallbox and ≥ 2 kW 1 phase wallbox)
 
 Behavior outline:
 - If not charging and net ≥ upper → start (subject to planner/SoC/priority)
