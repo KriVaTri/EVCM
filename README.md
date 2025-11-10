@@ -93,7 +93,8 @@ The configuration flow has three steps:
    - Wallbox phases (1 vs 3)
 
 2. Device (optional)
-   - Select a device to group entities under (optional)
+   - Select a wallbox device to pre-populate the entities in the next step (optional)
+   - When a wallbox device was selected, please check the pre-populated entities in step 3 and adjust if needed
 
 3. Sensors and thresholds
    - Net power sensor:
