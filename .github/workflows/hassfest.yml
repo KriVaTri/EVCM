@@ -1,28 +1,26 @@
-name: HassFest
+name: hassfest
 
 on:
   push:
+    paths:
+      - "custom_components/evcm/**"
+      - ".github/workflows/hassfest.yml"
+      - "manifest.json"
+      - "pyproject.toml"
   pull_request:
+    paths:
+      - "custom_components/evcm/**"
+      - ".github/workflows/hassfest.yml"
+      - "manifest.json"
+      - "pyproject.toml"
   workflow_dispatch:
 
 jobs:
-  validate:
+  hassfest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # Debug what the runner actually has
-      - name: Show workspace and integration paths
-        run: |
-          echo "Workspace: $PWD"
-          ls -la
-          echo "List custom_components:"
-          ls -la custom_components || true
-          echo "List custom_components/evcm:"
-          ls -la custom_components/evcm || true
-
-      # Run HassFest via container action (no repo action refs involved)
-      - name: HassFest (container)
-        uses: docker://ghcr.io/home-assistant/hassfest:latest
-        with:
-          args: --integration-path /github/workspace/custom_components/evcm
+      - name: Run hassfest validation
+        uses: home-assistant/actions/hassfest@main
