@@ -138,7 +138,6 @@ async def async_get_order(hass: HomeAssistant) -> List[str]:
     order += _sorted_by_name(hass, missing)
     return order
 
-# Backwards compatibility alias (oude naam in oudere code)
 async def async_get_priority_order(hass: HomeAssistant) -> List[str]:
     return await async_get_order(hass)
 
@@ -152,7 +151,6 @@ async def async_set_order(hass: HomeAssistant, order: List[str]) -> None:
     data = await _load_raw(hass)
     data["order"] = order
 
-    # NIEUWE REGEL: preferred updaten naar top van de nieuwe order (minimal fix voor 'preemptive restore' race)
     top = order[0] if order else None
     data["preferred_priority_entry_id"] = top if isinstance(top, str) else None
 
@@ -163,13 +161,11 @@ async def async_set_order(hass: HomeAssistant, order: List[str]) -> None:
         _name_for(hass, top) if top else None,
     )
 
-    # UI/number entities direct refreshen, ook bij priority mode UIT
     try:
         hass.bus.async_fire("evcm_priority_refresh")
     except Exception:
         _LOGGER.debug("Failed to fire evcm_priority_refresh after order update", exc_info=True)
 
-    # Align (first eligible) alleen als priority mode AAN
     await async_align_current_with_order(hass)
 
 
