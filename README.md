@@ -78,6 +78,8 @@ This document explains how EVCM works, how to configure it, and which entities i
 3. Restart Home Assistant.
 4. Add the integration via Settings → Devices & Services → “EVCM”.
 
+Or use HACS and add a custom repository, copy https://github.com/KriVaTri/EVCM into the repository field and choose integration as type.
+
 ---
 
 ## 4) Configuration flow
