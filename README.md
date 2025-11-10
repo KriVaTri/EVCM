@@ -218,6 +218,16 @@ Number entity: “<Entry Name> SOC limit” (0–100 %, integer, unit “%”).
 - When an SoC sensor is configured and the SoC is ≥ limit, charging is paused and (if Priority Charging is ON and this entry is current) EVCM advances to the next by order.
 - If there is no SoC sensor or the limit is unset, SoC gating is effectively disabled.
 
+### Temporarily disabling SoC gating
+
+You have two simple ways to effectively disable SoC-based pausing without changing any internal configuration:
+
+1. Set the SOC limit to 100%  
+   Charging will never pause due to SoC (unless your sensor reports >100%).
+
+2. Disable (or remove) the EV SoC sensor entity in Home Assistant  
+   When the sensor is unavailable or removed, EVCM treats SoC gating as inactive and will not pause based on SoC until the sensor is available again.
+
 ---
 
 ## 11) Planner window (start/stop datetimes)
