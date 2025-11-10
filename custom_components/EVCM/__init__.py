@@ -30,7 +30,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .controller import EVLoadController  # Lazy import
+    from .controller import EVLoadController
 
     try:
         controller = EVLoadController(hass, entry)
@@ -87,7 +87,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.entry_id in root:
         root.pop(entry.entry_id, None)
 
-    # Bepaal of er nog echte entry-data (dicts met key != interne flags) over is
     def _is_entry_dict(v):
         return isinstance(v, dict) and "controller" in v
 
@@ -96,23 +95,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     anchor_removed = root.get("_priority_anchor_entry_id") == entry.entry_id
 
     if anchor_removed and remaining_entry_dicts:
-        # Kies nieuwe anchor (alfabetisch op entry_id)
         new_anchor = sorted(remaining_entry_dicts)[0]
         root["_priority_anchor_entry_id"] = new_anchor
-        # Fire event zodat de switch kan migreren
         hass.bus.async_fire("evcm_priority_anchor_changed", {"new_anchor_entry_id": new_anchor})
         _LOGGER.debug("Priority anchor migrated to %s", new_anchor)
     elif anchor_removed and not remaining_entry_dicts:
         root.pop("_priority_anchor_entry_id", None)
 
-    # Als er géén entry dicts meer zijn (alleen interne flags), root opschonen
     if not remaining_entry_dicts:
-        # Verwijder eventuele interne flags om een schone start bij volgende setup te forceren
         for internal_key in list(root.keys()):
             if internal_key.startswith("_"):
                 root.pop(internal_key, None)
 
-    # Als na opschonen root leeg is, verwijder DOMAIN
     if not root:
         hass.data.pop(DOMAIN, None)
 
