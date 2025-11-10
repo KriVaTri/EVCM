@@ -2,7 +2,7 @@
 
 EVCM is a Home Assistant custom integration to intelligently control one or more EV wallboxes based on:
 - Net power at the grid connection (export/import)
-- Hysteresis thresholds (ECO vs OFF profiles)
+- Hysteresis thresholds (ECO ON vs ECO OFF profiles)
 - EV battery state-of-charge (SoC) limit
 - Planner window (start/stop datetimes)
 - Priority order across multiple charging points
@@ -40,8 +40,8 @@ This document explains how EVCM works, how to configure it, and which entities i
 ## 1) Concepts and terminology
 
 - Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/import sensors are used.
-- ECO thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
-- OFF thresholds: an alternate band used when ECO mode is OFF.
+- ECO ONthresholds: “upper” and “lower” thresholds used when ECO mode is ON.
+- ECO OFF thresholds: an alternate band used when ECO mode is OFF.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
 - Manual mode: manual override; no dynamic hysteresis regulation, but planner/SOC/priority still gate starting.
 - Priority Charging: when ON, only the “current priority” entry is allowed to regulate.
@@ -105,7 +105,7 @@ The configuration flow has three steps:
      - Lock (lock)
      - Current setting (number) — used to set amperage
    - Optional EV SoC sensor
-   - ECO / OFF threshold bands (upper/lower for each)
+   - ECO ON / ECO OFF threshold bands (upper/lower for each)
    - Scan interval (regulation tick seconds)
    - Sustain seconds for below-lower and missing-data pauses
    - Max current limit (A)
