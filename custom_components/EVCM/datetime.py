@@ -19,7 +19,6 @@ from .const import (
 )
 from .controller import EVLoadController
 
-MANUFACTURER = "KriVaTri"
 
 def _base_name(entry: ConfigEntry) -> str:
     name = (entry.data.get(CONF_NAME) or entry.title or "EVCM").strip()
@@ -62,7 +61,7 @@ class _PlannerDateTime(DateTimeEntity):
         return {
             "identifiers": {(DOMAIN, self._entry_id)},
             "name": base,
-            "manufacturer": "Custom",
+            "manufacturer": "KriVaTri",
             "model": "EVCM",
         }
 
