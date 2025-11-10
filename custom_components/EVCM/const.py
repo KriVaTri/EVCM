@@ -5,7 +5,6 @@ from homeassistant.const import Platform
 DOMAIN = "evcm"
 
 # Platforms: SWITCH (modes + global priority charging), DATETIME (planner window), NUMBER (SoC limit + priority order)
-# PRIORITY DROPDOWN (SELECT) VERWIJDERD
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER]
 
 # Persistant ECO (legacy)
@@ -37,12 +36,63 @@ CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 15
 
+CONF_SUPPLY_PROFILE = "supply_profile"
+
+CONF_WALLBOX_THREE_PHASE = "wallbox_three_phase"
+DEFAULT_WALLBOX_THREE_PHASE = False
+
+SUPPLY_PROFILES = {
+    "eu_1ph_230": {
+        "label": "1-phase 230V/240V",
+        "phases": 1,
+        "phase_voltage_v": 235,
+        "min_power_6a_w": int(235 * 6),
+        "regulation_min_w": 1300,
+    },
+    "eu_3ph_400": {
+        "label": "3-phase 400V",
+        "phases": 3,
+        "phase_voltage_v": 230,
+        "min_power_6a_w": int(230 * 6 * 3),
+        "regulation_min_w": 4000,
+    },
+    "na_3ph_208": {
+        "label": "3-phase 208V",
+        "phases": 3,
+        "phase_voltage_v": 120,
+        "min_power_6a_w": int(120 * 6 * 3),
+        "regulation_min_w": 2000,
+    },
+    "jp_1ph_200": {
+        "label": "1-phase 200V",
+        "phases": 1,
+        "phase_voltage_v": 200,
+        "min_power_6a_w": int(200 * 6),
+        "regulation_min_w": 1100,
+    },
+    "na_1ph_120": {
+        "label": "1-phase 120V (Level 1)",
+        "phases": 1,
+        "phase_voltage_v": 120,
+        "min_power_6a_w": int(120 * 6),
+        "regulation_min_w": 650,
+    },
+}
+
+SUPPLY_PROFILE_REG_THRESHOLDS = {
+    "eu_1ph_230": {"export_inc_w": 240, "import_dec_w": 70},
+    "jp_1ph_200": {"export_inc_w": 205, "import_dec_w": 60},
+    "na_1ph_120": {"export_inc_w": 122, "import_dec_w": 35},
+    "na_3ph_208": {"export_inc_w": 370, "import_dec_w": 105},
+    "eu_3ph_400": {"export_inc_w": 700, "import_dec_w": 200},
+}
+
 # Modes
 MODE_ECO = "eco"
 MODE_START_STOP = "start_stop"
 MODE_MANUAL_AUTO = "manual"
 MODE_CHARGE_PLANNER = "charge_planner"
-MODE_STARTSTOP_RESET = "startstop_reset"  # persistent toggle to reset Start/Stop mode on cable disconnect
+MODE_STARTSTOP_RESET = "startstop_reset"
 
 MODES = [MODE_ECO, MODE_START_STOP, MODE_MANUAL_AUTO, MODE_CHARGE_PLANNER, MODE_STARTSTOP_RESET]
 MODE_LABELS = {
@@ -52,10 +102,6 @@ MODE_LABELS = {
     MODE_CHARGE_PLANNER: "Charge Planner",
     MODE_STARTSTOP_RESET: "Start/Stop Reset",
 }
-
-# Phases
-CONF_WALLBOX_THREE_PHASE = "wallbox_three_phase"
-DEFAULT_WALLBOX_THREE_PHASE = False
 
 # Wallbox status values
 WALLBOX_STATUS_READY = "Ready"
@@ -77,9 +123,11 @@ DEFAULT_ECO_OFF_LOWER = -7000
 MIN_THRESHOLD_VALUE = -25000
 MAX_THRESHOLD_VALUE = 25000
 
+# Band-minimum
 MIN_BAND_SINGLE_PHASE = 2000
 MIN_BAND_THREE_PHASE = 5000
 
+# Historical EU min fallback
 MIN_CHARGE_POWER_SINGLE_PHASE_W = 1400
 MIN_CHARGE_POWER_THREE_PHASE_W = 4200
 
@@ -101,3 +149,10 @@ CONF_SOC_LIMIT_PERCENT = "soc_limit_percent"
 CONF_MAX_CURRENT_LIMIT_A = "max_current_limit_a"
 ABS_MIN_CURRENT_A = 6
 ABS_MAX_CURRENT_A = 32
+
+# Net power target (additive, UI-neutral)
+CONF_NET_POWER_TARGET_W = "net_power_target_w"
+DEFAULT_NET_POWER_TARGET_W = 0
+NET_POWER_TARGET_MIN_W = -5000
+NET_POWER_TARGET_MAX_W = 5000
+NET_POWER_TARGET_STEP_W = 50
