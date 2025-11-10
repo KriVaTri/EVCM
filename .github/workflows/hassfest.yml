@@ -20,6 +20,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run hassfest
-        uses: home-assistant/actions/hassfest@v1
+        uses: home-assistant/actions/hassfest@main
         # Als 'v1' niet werkt in jouw omgeving, gebruik:
         # uses: home-assistant/actions/hassfest@main
