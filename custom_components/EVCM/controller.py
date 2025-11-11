@@ -518,7 +518,7 @@ class EVLoadController:
             except Exception:
                 self._soc_limit_percent = None
         self.hass.async_create_task(self._save_unified_state())
-        _LOGGER.debug("SOC limit set: %s", self._soc_limit_percent)
+        _LOGGER.debug("SoC limit set: %s", self._soc_limit_percent)
         self.hass.async_create_task(self._hysteresis_apply())
 
     # -------------------- Mode listeners --------------------
