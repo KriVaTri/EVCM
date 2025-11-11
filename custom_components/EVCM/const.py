@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "evcm"
 
-# Platforms: SWITCH (modes + global priority charging), DATETIME (planner window), NUMBER (SoC limit + priority order)
+# Platforms: SWITCH (modes + global priority charging), DATETIME (planner window), NUMBER (EV SoC limit + priority order)
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER]
 
 # Persistant ECO (legacy)
@@ -140,7 +140,7 @@ SUSTAIN_MAX_SECONDS = 1800
 PLANNER_START_ENTITY_NAME = "planner start"
 PLANNER_STOP_ENTITY_NAME = "planner stop"
 
-# Persist keys for planner + SoC limit (legacy options keys remain for compatibility)
+# Persist keys for planner + EV SoC limit (legacy options keys remain for compatibility)
 CONF_PLANNER_START_ISO = "planner_start_iso"
 CONF_PLANNER_STOP_ISO = "planner_stop_iso"
 CONF_SOC_LIMIT_PERCENT = "soc_limit_percent"
