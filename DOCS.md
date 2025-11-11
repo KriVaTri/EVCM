@@ -41,13 +41,13 @@ Notes:
 Notes:
 
 3) Manual
-- [ ] Manual ON → no regulation; planner/SoC/priority still gate initial start
-- [ ] Manual OFF → automation resumes as before
+- [x] Manual ON → no regulation; planner/SoC/priority still gate
+- [x] Manual OFF → automation resumes as before
 Notes:
 
 4) Charge Planner (basic toggle)
-- [ ] Planner ON → outside window: pause; inside window: normal hysteresis applies
-- [ ] Planner OFF → planner no longer gates start/pause
+- [x] Planner ON → outside window: pause; inside window: normal hysteresis applies (also when manual = on)
+- [x] Planner OFF → planner no longer gates start/pause
 Notes:
 
 5) Start/Stop Reset
