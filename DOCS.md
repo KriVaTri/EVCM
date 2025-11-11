@@ -6,7 +6,7 @@ Metadata
 - Date: 11/11/2025
 - Tester: KriVaTri
 - Home Assistant version: 16.3 / 2025.11.1
-- EVCM version: 0.3.7
+- EVCM version: 0.3.8
 - Entries under test: A = “wallbox 1”, B = “wallbox 2”
 
 Environment
@@ -30,20 +30,20 @@ Notes:
 Perform for Entry A, then optionally repeat for Entry B unless stated otherwise.
 
 1) Start/Stop
-- [x] OFF → charging_enable turns OFF, regulation stops
-- [x] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
-- [x] Toggling triggers reset to 6A
+- [ ] OFF → charging_enable turns OFF, regulation stops
+- [ ] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
+- [ ] Toggling triggers reset to 6A
 Notes:
 
 2) ECO
-- [x] ECO ON uses ECO ON band; ECO OFF uses ECO OFF band
-- [x] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
+- [ ] ECO ON uses ECO ON band; ECO OFF uses ECO OFF band
+- [ ] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
 Notes:
 
 3) Manual
-- [x] Manual ON → no regulation; planner/SoC/priority still gate
-- [x] Manual OFF → automation resumes as before
-- [x] Toggling triggers reset to 6A
+- [ ] Manual ON → no regulation; planner/SoC/priority still gate
+- [ ] Manual OFF → automation resumes as before
+- [ ] Toggling triggers reset to 6A
 Notes:
 
 4) Charge Planner (basic toggle)
@@ -121,6 +121,7 @@ Notes:
 - [ ] Connect A (A=1) → A becomes current, B stops
 - [ ] Disconnect A → B resumes automatically
 - [ ] Reorder while active: when Priority ON and order changes, alignment selects first eligible as current; UI updates and preferred updated to top-of-order
+- [ ] Reasons for the next in line to start: higher priority entry cable disconnect, startstop = off, soc limit, planner on and outside timeframe, no-data and below lower timer
 Notes:
 
 ## H. Unknown/unavailable handling
