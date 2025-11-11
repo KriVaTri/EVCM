@@ -3,11 +3,11 @@
 Fill this checklist during testing. Tick each item when verified. Use the “Notes” fields to record observations, entity IDs, and logs.
 
 Metadata
-- Date: …
-- Tester: …
-- Home Assistant version: …
-- EVCM version: …
-- Entries under test: A = “…”, B = “…”
+- Date: 11/11/2025
+- Tester: KriVaTri
+- Home Assistant version: 16.3 / 2025.11.1
+- EVCM version: 0.3.6
+- Entries under test: A = “wallbox 1”, B = “wallbox 2”
 
 Environment
 - [ ] Net power sensor(s) present or simulated
