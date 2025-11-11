@@ -126,6 +126,33 @@ async def async_set_priority(hass: HomeAssistant, entry_id: Optional[str]) -> No
     _notify_all_priority_change(hass)
 
 
+# ---------------- Eligibility helper ----------------
+def _is_entry_eligible(hass: HomeAssistant, entry_id: str) -> bool:
+    """
+    Eligible voor priority als:
+      - kabel verbonden
+      - Start/Stop ON
+      - planner venster laat start toe
+      - SoC laat start toe
+    """
+    data = (hass.data.get(DOMAIN, {}) or {}).get(entry_id) or {}
+    ctl = data.get("controller")
+    if not ctl:
+        return False
+    try:
+        if not ctl.is_cable_connected():
+            return False
+        if not ctl.get_mode("start_stop"):
+            return False
+        if hasattr(ctl, "_planner_window_allows_start") and not ctl._planner_window_allows_start():
+            return False
+        if hasattr(ctl, "_soc_allows_start") and not ctl._soc_allows_start():
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # ---------------- Order ----------------
 async def async_get_order(hass: HomeAssistant) -> List[str]:
     data = await _load_raw(hass)
@@ -170,10 +197,15 @@ async def async_set_order(hass: HomeAssistant, order: List[str]) -> None:
 
 
 async def async_set_entry_order_index(hass: HomeAssistant, entry_id: str, index_one_based: int) -> None:
+    """
+    Verplaats entry naar een index (1-based) in de orderlijst.
+    Behoud alle bestaande entries en normaliseer de lijst.
+    """
     if entry_id not in _existing_entry_ids(hass):
         return
     order = await async_get_order(hass)
     order = [e for e in order if e != entry_id]
+    # clamp index to [1, len(order)+1]
     index = max(1, min(len(order) + 1, int(index_one_based)))
     order.insert(index - 1, entry_id)
     await async_set_order(hass, order)
@@ -212,19 +244,14 @@ async def async_cleanup_priority_if_removed(hass: HomeAssistant) -> None:
 # ---------------- Advance / Align helpers ----------------
 async def _first_eligible_by_order(hass: HomeAssistant) -> Optional[str]:
     """
-    Kies eerste kandidaat in 'order' die geschikt is (kabel verbonden + Start/Stop ON).
+    Kies eerste kandidaat in 'order' die geschikt is:
+      kabel + Start/Stop + planner + SoC
     Valt terug op eerste in order als geen geschikte kandidaten gevonden.
     """
     order = await async_get_order(hass)
     for eid in order:
-        data = (hass.data.get(DOMAIN, {}) or {}).get(eid) or {}
-        ctl = data.get("controller") if isinstance(data, dict) else None
-        if ctl:
-            try:
-                if ctl.is_cable_connected() and ctl.get_mode("start_stop"):
-                    return eid
-            except Exception:
-                continue
+        if _is_entry_eligible(hass, eid):
+            return eid
     return order[0] if order else None
 
 
@@ -240,7 +267,8 @@ async def async_align_current_with_order(hass: HomeAssistant) -> None:
 
 async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: str) -> None:
     """
-    Advance naar eerstvolgende geschikte entry (connected + Start/Stop ON).
+    Advance naar eerstvolgende geschikte entry:
+      kabel + Start/Stop + planner + SoC
     Als geen geschikte kandidaat → restore preferred of None.
     """
     entries = _existing_entry_ids(hass)
@@ -262,17 +290,10 @@ async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: 
         cand_id = order[(idx + step) % n]
         if cand_id == current_entry_id:
             continue
-        data = (hass.data.get(DOMAIN, {}) or {}).get(cand_id) or {}
-        ctl = data.get("controller") if isinstance(data, dict) else None
-        if not ctl:
-            continue
-        try:
-            if ctl.is_cable_connected() and ctl.get_mode("start_stop"):
-                await _set_priority_value(hass, cand_id)
-                _LOGGER.info("Priority advanced from %s to %s", current_entry_id, cand_id)
-                return
-        except Exception:
-            continue
+        if _is_entry_eligible(hass, cand_id):
+            await _set_priority_value(hass, cand_id)
+            _LOGGER.info("Priority advanced from %s to %s", current_entry_id, cand_id)
+            return
 
     preferred = await async_get_preferred_priority(hass)
     await _set_priority_value(hass, preferred)
