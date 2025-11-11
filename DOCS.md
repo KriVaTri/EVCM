@@ -10,19 +10,19 @@ Metadata
 - Entries under test: A = “wallbox 1”, B = “wallbox 2”
 
 Environment
-- [ ] Net power sensor(s) present or simulated
-- [ ] Cable connected sensor present/simulated
-- [ ] Charging enable switch present/simulated
-- [ ] Current setting number present/simulated
-- [ ] Wallbox status and charge power sensors present/simulated (optional but recommended)
-- [ ] EV SoC sensor present/simulated (optional)
+- [x] Net power sensor(s) present or simulated
+- [x] Cable connected sensor present/simulated
+- [x] Charging enable switch present/simulated
+- [x] Current setting number present/simulated
+- [x] Wallbox status and charge power sensors present/simulated
+- [x] EV SoC sensor present/simulated
 Notes:
 
 ## A. UI sanity and device info
 
-- [ ] Device shows “by KriVaTri” in Devices & Services
-- [ ] Each entry exposes 6 switches, 3 numbers, 2 datetime entities
-- [ ] Entity names have the “evcm …” object ID prefix and correct friendly names
+- [x] Device shows “by KriVaTri” in Devices & Services
+- [x] Each entry exposes 6 switches, 3 numbers, 2 datetime entities
+- [x] Entity names have the “evcm …” object ID prefix and correct friendly names
 Notes:
 
 ## B. Switches (per entry)
@@ -130,9 +130,9 @@ Notes:
 
 ## I. Persistence and reload
 
-- [ ] ECO/Manual/Start-Stop toggles persist across integration reload / HA restart
-- [ ] SoC limit and net power target persist
-- [ ] Priority order and current/preferred persist; on reconnect, preferred/top-of-order logic behaves as expected
+- [x] ECO/Manual/Start-Stop toggles persist across integration reload / HA restart
+- [x] SoC limit and net power target persist
+- [x] Priority order and current/preferred persist; on reconnect, preferred/top-of-order logic behaves as expected
 Notes:
 
 ## J. Config and options flow
