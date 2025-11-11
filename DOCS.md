@@ -30,13 +30,14 @@ Notes:
 Perform for Entry A, then optionally repeat for Entry B unless stated otherwise.
 
 1) Start/Stop
-- [ ] OFF → charging_enable turns OFF, regulation stops, current possibly set to 6A (per logic)
-- [ ] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
+- [x] OFF → charging_enable turns OFF, regulation stops
+- [x] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
+- [x] Toggling Start/Stop triggers reset to 6A
 Notes:
 
 2) ECO
-- [ ] ECO ON uses ECO ON band; ECO OFF uses OFF band
-- [ ] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
+- [x] ECO ON uses ECO ON band; ECO OFF uses OFF band
+- [x] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
 Notes:
 
 3) Manual
