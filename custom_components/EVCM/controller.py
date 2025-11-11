@@ -961,7 +961,8 @@ class EVLoadController:
         if self.get_mode(MODE_MANUAL_AUTO):
             if self.get_mode(MODE_START_STOP):
                 if (
-                    self._essential_data_available()
+                    self._priority_allowed_cache
+                    and self._essential_data_available()
                     and self._planner_window_allows_start()
                     and self._soc_allows_start()
                 ):
@@ -1101,6 +1102,46 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Auto-connect error: %s", exc)
 
+    # -------------------- Planner monitor --------------------
+    def _start_planner_monitor_if_needed(self):
+        if not self._planner_enabled():
+            self._stop_planner_monitor()
+            return
+        if self._planner_monitor_task and not self._planner_monitor_task.done():
+            return
+        self._planner_monitor_task = self.hass.async_create_task(self._planner_monitor_loop())
+
+    def _stop_planner_monitor(self):
+        task = self._planner_monitor_task
+        self._planner_monitor_task = None
+        if task and not task.done():
+            task.cancel()
+
+    async def _planner_monitor_loop(self):
+        previous_allows: Optional[bool] = None
+        try:
+            while self._planner_enabled():
+                allows = self._planner_window_allows_start()
+                if self.get_mode(MODE_START_STOP):
+                    # End/invalid window → pause (existing behavior)
+                    if self._charging_active and not allows:
+                        _LOGGER.info("Planner monitor: window ended/invalid → pause.")
+                        self._charging_active = False
+                        await self._ensure_charging_enable_off()
+                        with contextlib.suppress(Exception):
+                            if self._current_setting_entity:
+                                await self._set_current_setting_a(MIN_CURRENT_A)
+                        self._stop_regulation_loop()
+                    # Window just opened and not charging → try start
+                    elif (not self._charging_active) and allows and previous_allows is False:
+                        await self._hysteresis_apply()
+                previous_allows = allows
+                await asyncio.sleep(PLANNER_MONITOR_INTERVAL)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            _LOGGER.warning("Planner monitor error: %s", exc)
+
     # -------------------- Hysteresis --------------------
     def _current_upper(self) -> float:
         return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
@@ -1116,11 +1157,55 @@ class EVLoadController:
             self._stop_regulation_loop()
             self._stop_resume_monitor()
             return
+
+        # Manual ON: enforce gates (planner/soc/priority/cable), no thresholds/regulation.
         if self.get_mode(MODE_MANUAL_AUTO):
             self._reset_timers()
             self._stop_regulation_loop()
             self._stop_resume_monitor()
+
+            if not self._is_cable_connected():
+                self._charging_active = False
+                await self._ensure_charging_enable_off()
+                return
+
+            if not self._planner_window_allows_start():
+                if self._charging_active:
+                    _LOGGER.info("Planner window inactive (manual) → pause.")
+                    self._charging_active = False
+                    await self._ensure_charging_enable_off()
+                    if not preserve_current and self._current_setting_entity:
+                        with contextlib.suppress(Exception):
+                            await self._set_current_setting_a(MIN_CURRENT_A)
+                return
+
+            if not self._soc_allows_start():
+                if self._charging_active:
+                    _LOGGER.info("SOC gating (manual) → pause.")
+                    self._charging_active = False
+                    await self._ensure_charging_enable_off()
+                    if not preserve_current and self._current_setting_entity:
+                        with contextlib.suppress(Exception):
+                            await self._set_current_setting_a(MIN_CURRENT_A)
+                return
+
+            if not self._priority_allowed_cache:
+                if self._charging_active:
+                    _LOGGER.info("Priority gating (manual) → pause.")
+                    self._charging_active = False
+                    await self._ensure_charging_enable_off()
+                    if not preserve_current and self._current_setting_entity:
+                        with contextlib.suppress(Exception):
+                            await self._set_current_setting_a(MIN_CURRENT_A)
+                return
+
+            # All gates OK: auto-start without thresholds, no regulation.
+            if (not self._charging_active) and self._essential_data_available():
+                await self._ensure_charging_enable_on()
+                self._charging_active = True
             return
+
+        # Manual OFF: full hysteresis + regulation
         if not self._is_cable_connected():
             self._reset_timers()
             self._charging_active = False
@@ -1128,6 +1213,7 @@ class EVLoadController:
             self._stop_resume_monitor()
             await self._ensure_charging_enable_off()
             return
+
         if not self._planner_window_allows_start():
             if self._charging_active:
                 _LOGGER.info("Planner window inactive → pause.")
@@ -1140,6 +1226,7 @@ class EVLoadController:
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             return
+
         if not self._soc_allows_start():
             if self._charging_active:
                 _LOGGER.info("SOC gating → pause.")
@@ -1152,6 +1239,7 @@ class EVLoadController:
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             return
+
         if not self._priority_allowed_cache:
             if self._charging_active:
                 self._charging_active = False
@@ -1667,6 +1755,9 @@ class EVLoadController:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
                     _LOGGER.debug("Start/Stop toggle updated → %s", enabled)
+                    # Baseline to 6A on any Start/Stop toggle
+                    if self._current_setting_entity:
+                        self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
                     self.hass.async_create_task(self._enforce_start_stop_policy())
                 if enabled and previous is False:
@@ -1676,6 +1767,7 @@ class EVLoadController:
                             and self._essential_data_available()
                             and self._planner_window_allows_start()
                             and self._soc_allows_start()
+                            and self._priority_allowed_cache
                         ):
                             self.hass.async_create_task(self._ensure_charging_enable_on())
                             self._charging_active = True
@@ -1706,6 +1798,9 @@ class EVLoadController:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
                     _LOGGER.debug("Manual toggle updated → %s", enabled)
+                    # Baseline to 6A on any Manual toggle
+                    if self._current_setting_entity:
+                        self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if enabled:
                     self._reset_timers()
                     if (
@@ -1714,6 +1809,7 @@ class EVLoadController:
                         and self._essential_data_available()
                         and self._planner_window_allows_start()
                         and self._soc_allows_start()
+                        and self._priority_allowed_cache
                     ):
                         self.hass.async_create_task(self._ensure_charging_enable_on())
                         self._charging_active = True
@@ -1748,42 +1844,6 @@ class EVLoadController:
                 return
         finally:
             self._notify_mode_listeners()
-
-    # -------------------- Planner monitor --------------------
-    def _start_planner_monitor_if_needed(self):
-        if not self._planner_enabled():
-            self._stop_planner_monitor()
-            return
-        if self._planner_monitor_task and not self._planner_monitor_task.done():
-            return
-        self._planner_monitor_task = self.hass.async_create_task(self._planner_monitor_loop())
-
-    def _stop_planner_monitor(self):
-        task = self._planner_monitor_task
-        self._planner_monitor_task = None
-        if task and not task.done():
-            task.cancel()
-
-    async def _planner_monitor_loop(self):
-        try:
-            while self._planner_enabled():
-                if (
-                    self._charging_active
-                    and self.get_mode(MODE_START_STOP)
-                    and (not self._planner_window_allows_start())
-                ):
-                    _LOGGER.info("Planner monitor: window ended/invalid → pause.")
-                    self._charging_active = False
-                    await self._ensure_charging_enable_off()
-                    with contextlib.suppress(Exception):
-                        if self._current_setting_entity:
-                            await self._set_current_setting_a(MIN_CURRENT_A)
-                    self._stop_regulation_loop()
-                await asyncio.sleep(PLANNER_MONITOR_INTERVAL)
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            _LOGGER.warning("Planner monitor error: %s", exc)
 
     # -------------------- Public helper --------------------
     def get_min_charge_power_w(self) -> int:
