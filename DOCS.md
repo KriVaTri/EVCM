@@ -10,19 +10,19 @@ Metadata
 - Entries under test: A = “wallbox 1”, B = “wallbox 2”
 
 Environment
-- [x] Net power sensor(s) present or simulated
-- [x] Cable connected sensor present/simulated
-- [x] Charging enable switch present/simulated
-- [x] Current setting number present/simulated
-- [x] Wallbox status and charge power sensors present/simulated
-- [x] EV SoC sensor present/simulated
+- [ ] Net power sensor(s) present or simulated
+- [ ] Cable connected sensor present/simulated
+- [ ] Charging enable switch present/simulated
+- [ ] Current setting number present/simulated
+- [ ] Wallbox status and charge power sensors present/simulated
+- [ ] EV SoC sensor present/simulated
 Notes:
 
 ## A. UI sanity and device info
 
-- [x] Device shows “by KriVaTri” in Devices & Services
-- [x] Each entry exposes 6 switches, 3 numbers, 2 datetime entities
-- [x] Entity names have the “evcm …” object ID prefix and correct friendly names
+- [ ] Device shows “by KriVaTri” in Devices & Services
+- [ ] Each entry exposes 6 switches, 3 numbers, 2 datetime entities
+- [ ] Entity names have the “evcm …” object ID prefix and correct friendly names
 Notes:
 
 ## B. Switches (per entry)
@@ -30,24 +30,24 @@ Notes:
 Perform for Entry A, then optionally repeat for Entry B unless stated otherwise.
 
 1) Start/Stop
-- [x] OFF → charging_enable turns OFF, regulation stops
-- [x] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
-- [x] Toggling Start/Stop triggers reset to 6A
+- [ ] OFF → charging_enable turns OFF, regulation stops
+- [ ] ON → if net ≥ upper threshold → enable ON and regulation starts; else waits
+- [ ] Toggling Start/Stop triggers reset to 6A
 Notes:
 
 2) ECO
-- [x] ECO ON uses ECO ON band; ECO OFF uses OFF band
-- [x] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
+- [ ] ECO ON uses ECO ON band; ECO OFF uses OFF band
+- [ ] Toggling ECO changes which band drives start/pause; no immediate current step unless hysteresis conditions change
 Notes:
 
 3) Manual
-- [x] Manual ON → no regulation; planner/SoC/priority still gate
-- [x] Manual OFF → automation resumes as before
+- [ ] Manual ON → no regulation; planner/SoC/priority still gate
+- [ ] Manual OFF → automation resumes as before
 Notes:
 
 4) Charge Planner (basic toggle)
-- [x] Planner ON → outside window: pause; inside window: normal hysteresis applies (also when manual = on)
-- [x] Planner OFF → planner no longer gates start/pause
+- [ ] Planner ON → outside window: pause; inside window: normal hysteresis applies (also when manual = on)
+- [ ] Planner OFF → planner no longer gates start/pause
 Notes:
 
 5) Start/Stop Reset
@@ -64,9 +64,9 @@ Notes:
 
 1) Priority order (requires two entries)
 - Setup: A=1, B=2
-- [ ] Connect only B (A disconnected) → B starts (good)
-- [ ] Connect A → B stops; A starts (good)
-- [ ] Disconnect A → B resumes automatically (regression fixed)
+- [ ] Connect only B (A disconnected) → B starts
+- [ ] Connect A → B stops; A starts
+- [ ] Disconnect A → B resumes automatically
 - [ ] Setting order indices never produces duplicates; other entry’s number updates promptly
 Notes:
 
