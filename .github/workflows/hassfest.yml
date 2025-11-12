@@ -1,17 +1,24 @@
+name: Validate with hassfest
+
 on:
-  pull_request:
   push:
-    branches: [ main ]
+  pull_request:
+
 jobs:
   hassfest:
+    name: hassfest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.11"
-      - name: Install hassfest
-        run: pip install hassfest
+
+      - name: Install hassfest from GitHub
+        run: python -m pip install --upgrade pip && pip install git+https://github.com/home-assistant/hassfest.git
+
       - name: Run hassfest
         run: hassfest
