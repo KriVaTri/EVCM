@@ -11,6 +11,7 @@ EVCM is a Home Assistant custom integration to intelligently control one or more
 - Automatic pausing on insufficient surplus or missing data
 - Dynamic current regulation (Amps up/down) driven by export/import
 - One-phase vs three-phase specific behavior
+- Upper start debounce (start delay on the upper threshold)
 
 This document explains how EVCM works, how to configure it, and which entities it provides.
 
@@ -42,7 +43,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 ## 1) Concepts and terminology
 
-- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/impor[...]
+- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/import sensors are used.
 - ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
 - ECO OFF thresholds: an alternate band used when ECO mode is OFF.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
@@ -54,6 +55,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - Sustain: delay in seconds before pausing when conditions remain below lower threshold or data is missing.
 - Planner window: local datetimes (start/stop) defining when charging is allowed if planner mode is enabled.
 - SoC limit: maximum EV battery % at which charging should pause.
+- Upper start debounce: seconds that net power must stay at/above the upper threshold before (re)starting.
 
 ---
 
@@ -70,6 +72,7 @@ This document explains how EVCM works, how to configure it, and which entities i
   - EV SoC limit (%) (Number entity, input box, unit “%”)
   - Planner start/stop (DateTime entities)
 - No unintended reordering: setting current priority never mutates the global order.
+- Upper start debounce for clean starts on the upper threshold.
 
 ---
 
@@ -113,6 +116,7 @@ The configuration flow has three steps:
    - Optional EV SoC sensor
    - ECO ON / ECO OFF threshold bands (upper/lower for each)
    - Scan interval (regulation tick seconds)
+   - Upper start debounce (s): seconds that net ≥ upper must persist before (re)start. Set 0 to start immediately.
    - Sustain seconds for below-lower and missing-data pauses
    - Max current limit (A)
 
@@ -179,7 +183,7 @@ EVCM creates a set of switches per configured entry:
 
 Notes:
 - Priority Charging is a global flag; each entry exposes a proxy switch that reads/writes the same global value and stays in sync via events.
-- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect (persisted).
+- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state; only the user can change Start/Stop Reset.
 
 ---
 
@@ -217,16 +221,21 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO ON vs ECO OFF)
+## 8) Hysteresis thresholds (ECO ON vs OFF)
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta depending on supply voltage / phase profile)
 - ECO OFF band (used when ECO = OFF): ECO OFF upper and ECO OFF lower (Delta depending on supply voltage / phase profile)
 
 Behavior outline:
-- If not charging and net ≥ upper → start (subject to planner/SoC/priority)
+- If not charging and net ≥ upper → start (subject to planner/SoC/priority and upper start debounce)
 - If charging and net < lower → start the below-lower sustain timer; pause when the timer elapses
 - Otherwise, keep/reset timers accordingly
+
+Upper start debounce:
+- A separate setting (“Upper start debounce (s)”) defines how long net power must remain at/above the upper threshold before (re)starting.
+- Set to 0 to start immediately when net ≥ upper.
+- Applies to automatic starts in Start/Stop mode; Manual mode ignores threshold gating for starting.
 
 Upper/lower values and minimum band sizes are validated in the config flow (phase-dependent).
 
@@ -301,13 +310,13 @@ The timers are canceled/reset when conditions no longer apply.
 
 ## 13) Manual vs Start/Stop modes
 
-| Aspect                | Start/Stop (ON)                   | Manual (ON)                                         |
-|-----------------------|-----------------------------------|-----------------------------------------------------|
-| Threshold gating      | Yes                               | No (only initial start is checked)                  |
-| Regulation loop       | Yes                               | No                                                  |
-| Sustain timers        | Yes                               | No                                                  |
-| Auto-start            | Yes (when conditions allow)       | One-shot checks only (enable may be turned on/off)  |
-| Priority gating       | Yes (if Priority Charging is ON)  | Yes (for initial start allowance)                   |
+| Aspect                | Start/Stop (ON)                   | Manual (ON)                                                 |
+|-----------------------|-----------------------------------|-------------------------------------------------------------|
+| Threshold gating      | Yes                               | No (upper/eco thresholds ignored for starting)              |
+| Regulation loop       | Yes                               | No                                                          |
+| Sustain timers        | Yes                               | No                                                          |
+| Auto-start            | Yes (when conditions allow)       | One-shot checks only (enable may be turned on/off)          |
+| Priority gating       | Yes (if Priority Charging is ON)  | Yes (for initial start allowance)                           |
 
 Manual is intended for “force charging” scenarios but still respects planner/SoC for starting and priority gating for allowance.
 
@@ -385,6 +394,9 @@ Warnings include the entity ID and context and are also mirrored to the event bu
    Current increases by +1A steps (bounded by configured max).  
    Import increases  
    Current decreases by −1A steps (not below 6A).
+
+6. Restart of integration or cable disconnect  
+   Start/Stop is synchronized to the persisted Start/Stop Reset state (only the user can change the Reset switch).
 
 ---
 
