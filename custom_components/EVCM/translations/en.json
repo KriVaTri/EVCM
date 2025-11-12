@@ -37,7 +37,8 @@
           "eco_off_upper_w": "ECO OFF upper (W)",
           "eco_off_lower_w": "ECO OFF lower (W)",
           "scan_interval": "Scan interval (s)",
-          "sustain_seconds": "Sustain seconds",
+          "upper_debounce_seconds": "Upper start debounce (s)",
+          "sustain_seconds": "Sustain time (s)",
           "max_current_limit_a": "Max current (A)"
         }
       }
@@ -87,7 +88,8 @@
           "eco_off_upper_w": "ECO OFF upper (W)",
           "eco_off_lower_w": "ECO OFF lower (W)",
           "scan_interval": "Scan interval (s)",
-          "sustain_seconds": "Sustain seconds",
+          "upper_debounce_seconds": "Upper start debounce (s)",
+          "sustain_seconds": "Sustain time (s)",
           "max_current_limit_a": "Max current (A)"
         }
       }
