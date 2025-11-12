@@ -1,6 +1,6 @@
 {
   "domain": "evcm",
-  "name": "evcm",
+  "name": "EVCM",
   "codeowners": ["@KriVaTri"],
   "config_flow": true,
   "documentation": "https://github.com/KriVaTri/evcm#readme",
