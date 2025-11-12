@@ -16,13 +16,11 @@ from homeassistant.helpers.storage import Store
 
 from .const import (
     DOMAIN,
-    # Modes
     MODE_ECO,
     MODE_START_STOP,
     MODE_MANUAL_AUTO,
     MODE_CHARGE_PLANNER,
     MODE_STARTSTOP_RESET,
-    # Entities / config keys
     CONF_CABLE_CONNECTED,
     CONF_CHARGING_ENABLE,
     CONF_CURRENT_SETTING,
@@ -49,6 +47,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     CONF_SUSTAIN_SECONDS,
     DEFAULT_SUSTAIN_SECONDS,
+    SUSTAIN_MIN_SECONDS,
     SUSTAIN_MAX_SECONDS,
     CONF_CHARGE_POWER,
     CONF_EV_BATTERY_LEVEL,
@@ -57,11 +56,9 @@ from .const import (
     CONF_PLANNER_STOP_ISO,
     CONF_SOC_LIMIT_PERCENT,
     CONF_MAX_CURRENT_LIMIT_A,
-    # Supply profile
     CONF_SUPPLY_PROFILE,
     SUPPLY_PROFILES,
     SUPPLY_PROFILE_REG_THRESHOLDS,
-    # Net power target
     CONF_NET_POWER_TARGET_W,
     DEFAULT_NET_POWER_TARGET_W,
 )
@@ -73,7 +70,10 @@ from .priority import (
     async_advance_priority_to_next,
     async_get_priority_mode_enabled,
     async_get_order,
-    async_align_current_with_order,  # nieuw: voor preemptie als gates terug groen worden
+    async_align_current_with_order,
+    async_mark_priority_pause,
+    async_clear_priority_pause,
+    async_handover_after_pause,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,11 +87,6 @@ PLANNER_MONITOR_INTERVAL = 1.0
 
 MIN_CURRENT_A = 6
 
-REGULATION_MIN_POWER_3PH_W = 4000
-REGULATION_MIN_POWER_1PH_W = 1300
-
-# Unknown/unavailable reporting
-UNKNOWN_EVENT_NAME = "evcm_unknown_state"
 UNKNOWN_DEBOUNCE_SECONDS = 30.0
 REPORT_UNKNOWN_GETTERS = False
 REPORT_UNKNOWN_INITIAL = False
@@ -100,6 +95,8 @@ REPORT_UNKNOWN_TRANSITION_NEW = True
 REPORT_UNKNOWN_TRANSITION_OLD = False
 UNKNOWN_STARTUP_GRACE_SECONDS = 90.0
 
+RELOCK_AFTER_CHARGING_SECONDS = 30  # automatische re-lock na laden start
+
 
 def _effective_config(entry: ConfigEntry) -> dict:
     return {**entry.data, **entry.options}
@@ -107,32 +104,21 @@ def _effective_config(entry: ConfigEntry) -> dict:
 
 class EVLoadController:
     """
-    Control logic:
-      - Hysteresis start/stop (Manual OFF)
-      - Planner & SoC & Priority gating (always)
-      - Manual ON: auto-start without thresholds, no ±1A regulation
-      - ±1A regulation (Manual OFF only)
-      - Sustain timers
-      - Net Power Target
-      - Start/Stop Reset policy: on cable disconnect, Start/Stop follows Reset switch
-      - Baseline to 6A on Start/Stop & Manual toggles and cable connect/disconnect
-      - Priority advance on pause by planner/SOC/StartStop and cable disconnect
-      - Priority preempt (reclaim) when planner/SOC/StartStop become allowed again
+    Lock gedrag:
+    - Kabel uit → lock geforceerd locked.
+    - Kabel in → lock eerst locked; integratie unlockt automatisch wanneer starten mag.
+    - Start voorwaarden groen → unlock + charging enable ON.
+    - Laden gedetecteerd → na 30s lock automatisch weer locked (sessie blijft actief).
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-
-        # Subscriptions & persistence
         self._unsub_listeners: List[Callable[[], None]] = []
-        self._state_store: Store = Store(
-            hass, STATE_STORAGE_VERSION, f"{STATE_STORAGE_KEY_PREFIX}_{entry.entry_id}"
-        )
+        self._state_store: Store = Store(hass, STATE_STORAGE_VERSION, f"{STATE_STORAGE_KEY_PREFIX}_{entry.entry_id}")
         self._state_loaded: bool = False
         self._state: Dict[str, Optional[object]] = {}
 
-        # Mode flags
         self._modes: Dict[str, bool] = {
             MODE_ECO: True,
             MODE_START_STOP: True,
@@ -148,8 +134,7 @@ class EVLoadController:
         self._soc_limit_percent: Optional[int] = None
 
         eff = _effective_config(self.entry)
-
-        # Entity references
+        # Entities
         self._cable_entity: Optional[str] = eff.get(CONF_CABLE_CONNECTED)
         self._charging_enable_entity: Optional[str] = eff.get(CONF_CHARGING_ENABLE)
         self._current_setting_entity: Optional[str] = eff.get(CONF_CURRENT_SETTING)
@@ -158,89 +143,71 @@ class EVLoadController:
         self._charge_power_entity: Optional[str] = eff.get(CONF_CHARGE_POWER)
         self._ev_soc_entity: Optional[str] = eff.get(CONF_EV_BATTERY_LEVEL) or None
 
-        # Grid sensors
+        # Grid
         self._grid_single: bool = bool(eff.get(CONF_GRID_SINGLE, False))
         self._grid_power_entity: Optional[str] = eff.get(CONF_GRID_POWER)
         self._grid_export_entity: Optional[str] = eff.get(CONF_GRID_EXPORT)
         self._grid_import_entity: Optional[str] = eff.get(CONF_GRID_IMPORT)
 
-        # Supply profile migration / fallback
+        # Supply profile
         profile_key = eff.get(CONF_SUPPLY_PROFILE)
         if profile_key == "na_1ph_240":
-            _LOGGER.info("Supply profile 'na_1ph_240' migrated to 'eu_1ph_230' (1-phase 230V/240V).")
+            _LOGGER.info("Supply profile 'na_1ph_240' migrated to 'eu_1ph_230'.")
             profile_key = "eu_1ph_230"
         profile_meta = SUPPLY_PROFILES.get(profile_key) if isinstance(profile_key, str) else None
         if not profile_meta:
             legacy_three = bool(eff.get(CONF_WALLBOX_THREE_PHASE, DEFAULT_WALLBOX_THREE_PHASE))
             profile_meta = SUPPLY_PROFILES["eu_3ph_400"] if legacy_three else SUPPLY_PROFILES["eu_1ph_230"]
-
         self._supply_profile_key: str = profile_key or ("eu_3ph_400" if profile_meta["phases"] == 3 else "eu_1ph_230")
         self._supply_phases: int = int(profile_meta.get("phases", 1))
-        self._supply_phase_voltage_v: int = int(
-            profile_meta.get("phase_voltage_v", 235 if self._supply_phases == 1 else 230)
-        )
-        self._profile_min_power_6a_w: int = int(
-            profile_meta.get("min_power_6a_w", 1410 if self._supply_phases == 1 else 4140)
-        )
-        self._profile_reg_min_w: int = int(
-            profile_meta.get("regulation_min_w", 1300 if self._supply_phases == 1 else 4000)
-        )
+        self._supply_phase_voltage_v: int = int(profile_meta.get("phase_voltage_v", 235 if self._supply_phases == 1 else 230))
+        self._profile_min_power_6a_w: int = int(profile_meta.get("min_power_6a_w", profile_meta["phase_voltage_v"] * 6 * (self._supply_phases if self._supply_phases > 1 else 1)))
+        self._profile_reg_min_w: int = int(profile_meta.get("regulation_min_w", 1300 if self._supply_phases == 1 else 4000))
         self._wallbox_three_phase: bool = bool(self._supply_phases == 3)
 
-        # Threshold bands
+        # Hysteresis thresholds
         self._eco_on_upper: float = float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
         self._eco_on_lower: float = float(eff.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))
         self._eco_off_upper: float = float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
         self._eco_off_lower: float = float(eff.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))
 
-        # Scan interval & planner values
+        # Scan & sustain & planner
         self._scan_interval: int = int(eff.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
         self._planner_start_dt = self._parse_dt_option(eff.get(CONF_PLANNER_START_ISO))
         self._planner_stop_dt = self._parse_dt_option(eff.get(CONF_PLANNER_STOP_ISO))
         self._soc_limit_percent = self._parse_soc_option(eff.get(CONF_SOC_LIMIT_PERCENT))
-
-        # Net power target (fine-regulation center)
         self._net_power_target_w: int = int(eff.get(CONF_NET_POWER_TARGET_W, DEFAULT_NET_POWER_TARGET_W))
 
-        # Runtime state flags
+        # Runtime flags / tasks
         self._last_cable_connected: Optional[bool] = None
         self._auto_connect_task: Optional[asyncio.Task] = None
         self._regulation_task: Optional[asyncio.Task] = None
         self._resume_task: Optional[asyncio.Task] = None
         self._planner_monitor_task: Optional[asyncio.Task] = None
+        self._reclaim_task: Optional[asyncio.Task] = None
+        self._relock_task: Optional[asyncio.Task] = None
+
         self._charging_active: bool = False
 
-        # Timers
+        # Timers (state markers)
         self._below_lower_since: Optional[float] = None
         self._below_lower_task: Optional[asyncio.Task] = None
         self._no_data_since: Optional[float] = None
         self._no_data_task: Optional[asyncio.Task] = None
 
-        # Priority gating
+        # Priority
         self._priority_allowed_cache: bool = True
         self._priority_mode_enabled: bool = False
 
-        # Disconnect reset skip (initial)
-        self._skip_next_disconnect_reset: bool = False
-
-        # Unknown state reporting
+        # Unknown handling
         self._unknown_last_emit: Dict[Tuple[str, str], float] = {}
         self._init_monotonic: float = time.monotonic()
 
-        # Track last SOC-allow state to detect False->True transitions (voor preemptie)
+        # Trackers
         self._last_soc_allows: Optional[bool] = None
+        self._last_missing_nonempty: Optional[bool] = None
 
-        _LOGGER.debug(
-            "Supply profile %s: phases=%s, phase_voltage=%sV, min_power_6A=%sW, reg_min=%sW, target=%sW",
-            self._supply_profile_key,
-            self._supply_phases,
-            self._supply_phase_voltage_v,
-            self._profile_min_power_6a_w,
-            self._profile_reg_min_w,
-            self._net_power_target_w,
-        )
-
-    # -------------------- Unknown / unavailable handling --------------------
+    # ---------------- Unknown helpers ----------------
     @staticmethod
     def _is_known_state(st) -> bool:
         return bool(st and st.state not in ("unknown", "unavailable"))
@@ -262,11 +229,7 @@ class EVLoadController:
 
     def _should_report_unknown(self, context: str, side: Optional[str]) -> bool:
         if (time.monotonic() - self._init_monotonic) < UNKNOWN_STARTUP_GRACE_SECONDS:
-            cat = self._context_category(context)
-            if cat == "transition" and side == "new" and REPORT_UNKNOWN_TRANSITION_NEW:
-                return True
-            return False
-
+            return self._context_category(context) == "transition" and side == "new" and REPORT_UNKNOWN_TRANSITION_NEW
         cat = self._context_category(context)
         if cat == "get":
             return REPORT_UNKNOWN_GETTERS
@@ -281,43 +244,21 @@ class EVLoadController:
                 return REPORT_UNKNOWN_TRANSITION_OLD
         return True
 
-    def _report_unknown(
-        self,
-        entity_id: Optional[str],
-        raw_state: Optional[str],
-        context: str,
-        side: Optional[str] = None,
-    ):
-        if not entity_id:
-            return
-        if not self._should_report_unknown(context, side):
+    def _report_unknown(self, entity_id: Optional[str], raw_state: Optional[str], context: str, side: Optional[str] = None):
+        if not entity_id or not self._should_report_unknown(context, side):
             return
         now = time.monotonic()
         key = (entity_id, f"{context}:{side}" if side else context)
         last = self._unknown_last_emit.get(key)
-        if last is not None and (now - last) < UNKNOWN_DEBOUNCE_SECONDS:
+        if last and (now - last) < UNKNOWN_DEBOUNCE_SECONDS:
             return
         self._unknown_last_emit[key] = now
         _LOGGER.warning(
-            "Unknown/unavailable detected: entity=%s state=%s context=%s%s entry=%s",
-            entity_id,
-            raw_state,
-            context,
-            f":{side}" if side else "",
-            self.entry.entry_id,
+            "Unknown/unavailable: entity=%s state=%s context=%s%s entry=%s",
+            entity_id, raw_state, context, f":{side}" if side else "", self.entry.entry_id
         )
-        with contextlib.suppress(Exception):
-            self.hass.bus.async_fire(
-                UNKNOWN_EVENT_NAME,
-                {
-                    "entry_id": self.entry.entry_id,
-                    "entity_id": entity_id,
-                    "state": raw_state,
-                    "context": f"{context}{(':'+side) if side else ''}",
-                },
-            )
 
-    # -------------------- Persistence (unified state) --------------------
+    # ---------------- Persistence ----------------
     async def _load_unified_state(self):
         if self._state_loaded:
             return
@@ -328,7 +269,6 @@ class EVLoadController:
             planner_start_iso = eff.get(CONF_PLANNER_START_ISO)
             planner_stop_iso = eff.get(CONF_PLANNER_STOP_ISO)
             soc_opt = eff.get(CONF_SOC_LIMIT_PERCENT)
-            # include target default
             target_opt = eff.get(CONF_NET_POWER_TARGET_W, DEFAULT_NET_POWER_TARGET_W)
             self._state = {
                 "version": STATE_STORAGE_VERSION,
@@ -343,10 +283,8 @@ class EVLoadController:
                 "net_power_target_w": int(target_opt) if isinstance(target_opt, (int, float)) else DEFAULT_NET_POWER_TARGET_W,
             }
             await self._state_store.async_save(self._state)
-            _LOGGER.debug("Unified state initialized: %s", self._state)
         else:
             self._state = data
-            _LOGGER.debug("Unified state loaded: %s", self._state)
 
         self._modes[MODE_ECO] = bool(self._state.get("eco_enabled", True))
         self._modes[MODE_CHARGE_PLANNER] = bool(self._state.get("planner_enabled", False))
@@ -359,7 +297,6 @@ class EVLoadController:
         soc = self._safe_int(self._state.get("soc_limit_percent"))
         self._soc_limit_percent = soc if soc is not None and 0 <= soc <= 100 else None
 
-        # load target
         try:
             self._net_power_target_w = int(self._state.get("net_power_target_w", DEFAULT_NET_POWER_TARGET_W))
         except Exception:
@@ -382,7 +319,6 @@ class EVLoadController:
         }
         with contextlib.suppress(Exception):
             await self._state_store.async_save(to_save)
-        _LOGGER.debug("Unified state persisted: %s", to_save)
 
     @staticmethod
     def _safe_int(v) -> Optional[int]:
@@ -393,7 +329,7 @@ class EVLoadController:
         except Exception:
             return None
 
-    # -------------------- Priority helpers --------------------
+    # ---------------- Priority helpers ----------------
     async def _refresh_priority_mode_flag(self):
         self._priority_mode_enabled = await async_get_priority_mode_enabled(self.hass)
 
@@ -401,9 +337,7 @@ class EVLoadController:
         if not self._priority_mode_enabled:
             return True
         pid = await async_get_priority(self.hass)
-        if pid is None:
-            return True
-        return pid == self.entry.entry_id
+        return pid is None or pid == self.entry.entry_id
 
     async def _is_current_priority(self) -> bool:
         pid = await async_get_priority(self.hass)
@@ -430,7 +364,7 @@ class EVLoadController:
             self._start_regulation_loop_if_needed()
             self._start_resume_monitor_if_needed()
 
-    # -------------------- Parse helpers --------------------
+    # ---------------- Parsing helpers ----------------
     def _parse_dt_option(self, s: Optional[str]) -> Optional[datetime]:
         if not s or not isinstance(s, str):
             return None
@@ -449,7 +383,6 @@ class EVLoadController:
             return None
         return max(0, min(100, iv))
 
-    # Public helper used by priority code
     def is_cable_connected(self) -> bool:
         return self._is_cable_connected()
 
@@ -461,7 +394,105 @@ class EVLoadController:
             v = 16
         return max(MIN_CURRENT_A, min(32, v))
 
-    # -------------------- Net Power Target API --------------------
+    # ---------------- Lock helpers ----------------
+    def _is_lock_unlocked(self) -> bool:
+        if not self._lock_entity:
+            return True
+        st = self.hass.states.get(self._lock_entity)
+        if not self._is_known_state(st):
+            self._report_unknown(self._lock_entity, getattr(st, "state", None), "lock_get")
+            return False
+        return str(st.state).strip().lower() == "unlocked"
+
+    async def _ensure_lock_locked(self):
+        if not self._lock_entity:
+            return
+        st = self.hass.states.get(self._lock_entity)
+        try:
+            if self._is_known_state(st) and str(st.state).strip().lower() == "locked":
+                return
+            dom, _ = self._lock_entity.split(".", 1)
+            if dom != "lock":
+                return
+            await self.hass.services.async_call("lock", "lock", {"entity_id": self._lock_entity}, blocking=True)
+            _LOGGER.info("Lock enforced → locked")
+        except Exception:
+            _LOGGER.debug("Failed to lock entity %s", self._lock_entity, exc_info=True)
+
+    async def _ensure_unlocked_for_start(self, timeout_s: float = 5.0) -> bool:
+        if not self._lock_entity:
+            return True
+        if self._is_lock_unlocked():
+            return True
+        if not self._is_cable_connected():
+            return False
+        try:
+            dom, _ = self._lock_entity.split(".", 1)
+            if dom != "lock":
+                return False
+            _LOGGER.debug("Attempting lock.unlock for %s", self._lock_entity)
+            await self.hass.services.async_call("lock", "unlock", {"entity_id": self._lock_entity}, blocking=True)
+        except Exception:
+            _LOGGER.debug("Failed to call lock.unlock for %s", self._lock_entity, exc_info=True)
+            return False
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._is_lock_unlocked():
+                return True
+            await asyncio.sleep(0.2)
+        _LOGGER.info("Unlock timeout: lock stayed locked after %.1fs", timeout_s)
+        return False
+
+    def _cancel_relock_task(self):
+        t = self._relock_task
+        self._relock_task = None
+        if t and not t.done():
+            t.cancel()
+
+    def _is_status_charging(self) -> bool:
+        st = self._get_wallbox_status()
+        if not st:
+            return False
+        s = str(st).strip().lower()
+        exp = str(WALLBOX_STATUS_CHARGING).strip().lower() if WALLBOX_STATUS_CHARGING is not None else "charging"
+        return s == "charging" or s == exp
+
+    def _schedule_relock_after_charging_start(self, already_detected: bool = False):
+        self._cancel_relock_task()
+
+        async def _runner():
+            try:
+                if not already_detected:
+                    deadline = time.monotonic() + 120.0
+                    while time.monotonic() < deadline:
+                        if not self._is_cable_connected():
+                            _LOGGER.debug("Relock monitor aborted: cable disconnected")
+                            return
+                        status = self._get_wallbox_status()
+                        power = self._get_charge_power_w()
+                        if self._is_status_charging() or (power is not None and power > 100):
+                            _LOGGER.debug(
+                                "Relock monitor: charging detected by %s (status=%s, power=%s)",
+                                "status" if self._is_status_charging() else "power", status, power
+                            )
+                            break
+                        await asyncio.sleep(1)
+                    else:
+                        _LOGGER.debug("Relock monitor timeout: no charging detected within 120s")
+                        return
+                await asyncio.sleep(RELOCK_AFTER_CHARGING_SECONDS)
+                await self._ensure_lock_locked()
+                _LOGGER.info("Auto re-lock executed %ss after charging started", RELOCK_AFTER_CHARGING_SECONDS)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _LOGGER.debug("Re-lock monitor error", exc_info=True)
+            finally:
+                self._relock_task = None
+
+        self._relock_task = self.hass.async_create_task(_runner())
+
+    # ---------------- Net power target ----------------
     @property
     def net_power_target_w(self) -> int:
         return int(self._net_power_target_w)
@@ -471,17 +502,13 @@ class EVLoadController:
             iv = int(round(float(value if value is not None else DEFAULT_NET_POWER_TARGET_W)))
         except Exception:
             iv = DEFAULT_NET_POWER_TARGET_W
-        # clamp to reasonable range without needing const imports here
-        if iv < -50000:
-            iv = -50000
-        if iv > 50000:
-            iv = 50000
+        iv = max(-50000, min(50000, iv))
         if iv != self._net_power_target_w:
             self._net_power_target_w = iv
             self.hass.async_create_task(self._save_unified_state())
             _LOGGER.info("Net power target updated → %s W", iv)
 
-    # -------------------- Planner & SoC public API --------------------
+    # ---------------- Planner / SoC setters ----------------
     @property
     def planner_start_dt(self) -> Optional[datetime]:
         return self._planner_start_dt
@@ -495,7 +522,6 @@ class EVLoadController:
             dt = dt_util.as_local(dt)
         self._planner_start_dt = dt
         self.hass.async_create_task(self._save_unified_state())
-        _LOGGER.debug("Planner start set: %s", dt)
         if self._planner_enabled():
             self.hass.async_create_task(self._hysteresis_apply())
 
@@ -504,7 +530,6 @@ class EVLoadController:
             dt = dt_util.as_local(dt)
         self._planner_stop_dt = dt
         self.hass.async_create_task(self._save_unified_state())
-        _LOGGER.debug("Planner stop set: %s", dt)
         if self._planner_enabled():
             self.hass.async_create_task(self._hysteresis_apply())
 
@@ -521,10 +546,9 @@ class EVLoadController:
             except Exception:
                 self._soc_limit_percent = None
         self.hass.async_create_task(self._save_unified_state())
-        _LOGGER.debug("SoC limit set: %s", self._soc_limit_percent)
         self.hass.async_create_task(self._hysteresis_apply())
 
-    # -------------------- Mode listeners --------------------
+    # ---------------- Mode listeners ----------------
     def add_mode_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
         self._mode_listeners.append(cb)
 
@@ -539,7 +563,7 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 cb()
 
-    # -------------------- Planner gating --------------------
+    # ---------------- Planner gating ----------------
     def _planner_enabled(self) -> bool:
         return self.get_mode(MODE_CHARGE_PLANNER)
 
@@ -563,7 +587,7 @@ class EVLoadController:
             return True
         return self._planner_window_valid() and self._is_within_planner_window()
 
-    # -------------------- SoC gating --------------------
+    # ---------------- SoC gating ----------------
     def _get_ev_soc_percent(self) -> Optional[float]:
         if not self._ev_soc_entity:
             return None
@@ -580,60 +604,37 @@ class EVLoadController:
         return val
 
     def _soc_limit_reached(self) -> bool:
-        if self._ev_soc_entity is None:
-            return False
-        if self._soc_limit_percent is None:
+        if self._ev_soc_entity is None or self._soc_limit_percent is None:
             return False
         soc = self._get_ev_soc_percent()
         return bool(soc is not None and soc >= self._soc_limit_percent)
 
     def _soc_allows_start(self) -> bool:
-        if self._ev_soc_entity is None:
-            return True
-        if self._soc_limit_percent is None:
+        if self._ev_soc_entity is None or self._soc_limit_percent is None:
             return True
         soc = self._get_ev_soc_percent()
         if soc is None:
             return True
         return soc < self._soc_limit_percent
 
-    # -------------------- Supply-profile derived minima --------------------
+    # ---------------- Supply minima ----------------
     def _effective_regulation_min_power(self) -> int:
-        """Profile-dependent minimum power for A-step regulation."""
-        if self._supply_phases == 3:
-            return self._profile_reg_min_w or REGULATION_MIN_POWER_3PH_W
-        return self._profile_reg_min_w or REGULATION_MIN_POWER_1PH_W
+        return self._profile_reg_min_w or (4000 if self._supply_phases == 3 else 1300)
 
     def _effective_min_charge_power(self) -> int:
-        """Profile-dependent minimum indicative charging power at 6A."""
-        if self._supply_phases == 3:
-            return max(self._profile_min_power_6a_w, MIN_CHARGE_POWER_THREE_PHASE_W)
-        return max(self._profile_min_power_6a_w, MIN_CHARGE_POWER_SINGLE_PHASE_W)
+        base = self._profile_min_power_6a_w
+        return max(base, MIN_CHARGE_POWER_THREE_PHASE_W if self._supply_phases == 3 else MIN_CHARGE_POWER_SINGLE_PHASE_W)
 
-    # -------------------- Initialization / Shutdown --------------------
+    # ---------------- Initialization / Shutdown ----------------
     async def async_initialize(self):
         await self._load_unified_state()
         await self._refresh_priority_mode_flag()
         self._priority_allowed_cache = await self._is_priority_allowed()
-        self._skip_next_disconnect_reset = True
         self._init_monotonic = time.monotonic()
-        # Init SOC-allow tracker (om False->True te kunnen detecteren)
         with contextlib.suppress(Exception):
             self._last_soc_allows = self._soc_allows_start()
+            self._last_missing_nonempty = bool(self._current_missing_components())
         self._subscribe_listeners()
-        _LOGGER.info(
-            "EVLoadController init (priority_mode=%s, priority_allowed=%s, ECO=%s, planner=%s, StartStop=%s, Manual=%s, SoC_limit=%s%%, SoC_sensor=%s, profile=%s, target=%sW)",
-            self._priority_mode_enabled,
-            self._priority_allowed_cache,
-            self.get_mode(MODE_ECO),
-            self.get_mode(MODE_CHARGE_PLANNER),
-            self.get_mode(MODE_START_STOP),
-            self.get_mode(MODE_MANUAL_AUTO),
-            self._soc_limit_percent,
-            self._ev_soc_entity,
-            self._supply_profile_key,
-            self._net_power_target_w,
-        )
         await self._enforce_start_stop_policy()
         await self._apply_cable_state_initial()
         self._start_planner_monitor_if_needed()
@@ -645,79 +646,95 @@ class EVLoadController:
     async def async_shutdown(self):
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
-        self._stop_resume_monitor()
-        self._stop_planner_monitor()
-        self._cancel_below_lower_timer()
-        self._cancel_no_data_timer()
+        for t in [self._resume_task, self._planner_monitor_task, self._below_lower_task, self._no_data_task, self._reclaim_task, self._relock_task]:
+            if t and not t.done():
+                t.cancel()
+        self._resume_task = self._planner_monitor_task = self._below_lower_task = self._no_data_task = self._reclaim_task = self._relock_task = None
         for unsub in list(self._unsub_listeners):
             with contextlib.suppress(Exception):
                 unsub()
         self._unsub_listeners = []
 
-    # -------------------- Subscriptions --------------------
+    # ---------------- Subscriptions ----------------
     def _subscribe_listeners(self):
         for unsub in list(self._unsub_listeners):
             with contextlib.suppress(Exception):
                 unsub()
         self._unsub_listeners = []
         if self._cable_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._cable_entity, self._async_cable_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._cable_entity, self._async_cable_event))
         if self._charging_enable_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._charging_enable_entity, self._async_charging_enable_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._charging_enable_entity, self._async_charging_enable_event))
         if self._lock_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._lock_entity, self._async_lock_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._lock_entity, self._async_lock_event))
         if self._wallbox_status_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._wallbox_status_entity, self._async_wallbox_status_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._wallbox_status_entity, self._async_wallbox_status_event))
         if self._charge_power_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._charge_power_entity, self._async_charge_power_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._charge_power_entity, self._async_charge_power_event))
         if self._grid_single and self._grid_power_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._grid_power_entity, self._async_net_power_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._grid_power_entity, self._async_net_power_event))
         else:
             if self._grid_export_entity:
-                self._unsub_listeners.append(
-                    async_track_state_change_event(self.hass, self._grid_export_entity, self._async_net_power_event)
-                )
+                self._unsub_listeners.append(async_track_state_change_event(self.hass, self._grid_export_entity, self._async_net_power_event))
             if self._grid_import_entity:
-                self._unsub_listeners.append(
-                    async_track_state_change_event(self.hass, self._grid_import_entity, self._async_net_power_event)
-                )
+                self._unsub_listeners.append(async_track_state_change_event(self.hass, self._grid_import_entity, self._async_net_power_event))
         if self._ev_soc_entity:
-            self._unsub_listeners.append(
-                async_track_state_change_event(self.hass, self._ev_soc_entity, self._async_ev_soc_event)
-            )
+            self._unsub_listeners.append(async_track_state_change_event(self.hass, self._ev_soc_entity, self._async_ev_soc_event))
 
-    # -------------------- Missing data / timers evaluation --------------------
+    # ---------------- Helper routines (deduplicated) ----------------
+    async def _start_charging_and_reclaim(self):
+        await self._ensure_charging_enable_on()
+        self._charging_active = True if self._is_charging_enabled() else False
+        with contextlib.suppress(Exception):
+            await async_clear_priority_pause(self.hass, self.entry.entry_id, "below_lower", notify=False)
+        self._stop_reclaim_monitor()
+        if self._priority_mode_enabled:
+            with contextlib.suppress(Exception):
+                await async_align_current_with_order(self.hass)
+
+    async def _pause_basic(self, set_current_to_min: bool):
+        self._charging_active = False
+        await self._ensure_charging_enable_off()
+        self._cancel_relock_task()
+        if set_current_to_min and self._current_setting_entity:
+            with contextlib.suppress(Exception):
+                await self._set_current_setting_a(MIN_CURRENT_A)
+        self._stop_regulation_loop()
+        self._start_resume_monitor_if_needed()
+
+    async def _advance_if_current(self):
+        if not self._priority_mode_enabled:
+            return
+        try:
+            cur = await async_get_priority(self.hass)
+            if cur == self.entry.entry_id:
+                await async_advance_priority_to_next(self.hass, self.entry.entry_id)
+        except Exception:
+            _LOGGER.debug("Advance failed", exc_info=True)
+
+    # ---------------- Missing data / timers eval ----------------
     def _evaluate_missing_and_start_no_data_timer(self):
-        if self._planner_enabled() and (
-            not self._planner_window_valid() or not self._is_within_planner_window()
-        ):
+        if self._planner_enabled() and (not self._planner_window_valid() or not self._is_within_planner_window()):
             if self._no_data_since is not None:
                 _LOGGER.debug("No-data timer reset (planner inactive)")
             self._no_data_since = None
             self._cancel_no_data_timer()
+            self._last_missing_nonempty = bool(self._current_missing_components())
             return
 
         missing = self._current_missing_components()
+        prev_missing = self._last_missing_nonempty
+        now_missing = bool(missing)
+
         if not self._conditions_for_timers():
             if self._no_data_since is not None:
                 _LOGGER.debug("No-data timer reset (conditions invalid)")
             self._no_data_since = None
             self._cancel_no_data_timer()
+            self._last_missing_nonempty = now_missing
             return
 
-        if missing:
+        if now_missing:
             if self._no_data_since is None and self._sustain_seconds() > 0:
                 self._no_data_since = time.monotonic()
                 _LOGGER.debug("No-data timer start (missing: %s)", ", ".join(missing))
@@ -727,8 +744,13 @@ class EVLoadController:
                 _LOGGER.debug("No-data timer cancel (data OK)")
             self._no_data_since = None
             self._cancel_no_data_timer()
+            if prev_missing and self._priority_mode_enabled:
+                self.hass.async_create_task(async_clear_priority_pause(self.hass, self.entry.entry_id, "no_data", notify=False))
+                self.hass.async_create_task(async_align_current_with_order(self.hass))
 
-    # -------------------- Event callbacks --------------------
+        self._last_missing_nonempty = now_missing
+
+    # ---------------- Event callbacks ----------------
     @callback
     def _async_cable_event(self, event: Event):
         old = event.data.get("old_state")
@@ -736,14 +758,10 @@ class EVLoadController:
         self.hass.async_create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._cable_entity, getattr(new, "state", None), "cable_transition", side="new"
-                )
+                self._report_unknown(self._cable_entity, getattr(new, "state", None), "cable_transition", side="new")
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("cable_transition", side="old"):
-                    self._report_unknown(
-                        self._cable_entity, getattr(old, "state", None), "cable_transition", side="old"
-                    )
+                    self._report_unknown(self._cable_entity, getattr(old, "state", None), "cable_transition", side="old")
             return
         self._handle_cable_change(old, new)
         self._evaluate_missing_and_start_no_data_timer()
@@ -755,31 +773,17 @@ class EVLoadController:
         self.hass.async_create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._charging_enable_entity,
-                    getattr(new, "state", None),
-                    "charging_enable_transition",
-                    side="new",
-                )
+                self._report_unknown(self._charging_enable_entity, getattr(new, "state", None), "charging_enable_transition", side="new")
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("charging_enable_transition", side="old"):
-                    self._report_unknown(
-                        self._charging_enable_entity,
-                        getattr(old, "state", None),
-                        "charging_enable_transition",
-                        side="old",
-                    )
+                    self._report_unknown(self._charging_enable_entity, getattr(old, "state", None), "charging_enable_transition", side="old")
             return
         if not self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._ensure_charging_enable_off())
             return
         self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
-        if (
-            self._is_charging_enabled()
-            and not self.get_mode(MODE_MANUAL_AUTO)
-            and self._is_cable_connected()
-        ):
+        if self._is_charging_enabled() and not self.get_mode(MODE_MANUAL_AUTO) and self._is_cable_connected():
             self._start_regulation_loop_if_needed()
 
     @callback
@@ -787,6 +791,7 @@ class EVLoadController:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         ent = event.data.get("entity_id")
+        self.hass.async_create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(ent, getattr(new, "state", None), "net_power_transition", side="new")
@@ -802,17 +807,20 @@ class EVLoadController:
     def _async_wallbox_status_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
+        self.hass.async_create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._wallbox_status_entity, getattr(new, "state", None), "status_transition", side="new"
-                )
+                self._report_unknown(self._wallbox_status_entity, getattr(new, "state", None), "status_transition", side="new")
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("status_transition", side="old"):
-                    self._report_unknown(
-                        self._wallbox_status_entity, getattr(old, "state", None), "status_transition", side="old"
-                    )
+                    self._report_unknown(self._wallbox_status_entity, getattr(old, "state", None), "status_transition", side="old")
             return
+
+        if self._is_cable_connected() and self._is_status_charging():
+            if not self._relock_task:
+                _LOGGER.debug("Status=CHARGING detected → scheduling relock watcher (direct)")
+                self._schedule_relock_after_charging_start(already_detected=True)
+
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
@@ -822,17 +830,24 @@ class EVLoadController:
     def _async_charge_power_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
+        self.hass.async_create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._charge_power_entity, getattr(new, "state", None), "charge_power_transition", side="new"
-                )
+                self._report_unknown(self._charge_power_entity, getattr(new, "state", None), "charge_power_transition", side="new")
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("charge_power_transition", side="old"):
-                    self._report_unknown(
-                        self._charge_power_entity, getattr(old, "state", None), "charge_power_transition", side="old"
-                    )
+                    self._report_unknown(self._charge_power_entity, getattr(old, "state", None), "charge_power_transition", side="old")
             return
+
+        try:
+            pw = float(new.state)
+        except Exception:
+            pw = None
+        if self._is_cable_connected() and (pw is not None and pw > 100):
+            if not self._relock_task:
+                _LOGGER.debug("Power>100W detected → scheduling relock watcher (direct)")
+                self._schedule_relock_after_charging_start(already_detected=True)
+
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
@@ -843,26 +858,20 @@ class EVLoadController:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         if not (self._is_known_state(old) and self._is_known_state(new)):
-            if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._lock_entity, getattr(new, "state", None), "lock_transition", side="new"
-                )
-            elif self._is_unknownish_state(old):
-                if self._should_report_unknown("lock_transition", side="old"):
-                    self._report_unknown(
-                        self._lock_entity, getattr(old, "state", None), "lock_transition", side="old"
-                    )
             return
-        if old.state == "locked" and new.state == "unlocked":
+        if str(old.state).lower() == "locked" and str(new.state).lower() == "unlocked":
             if self.get_mode(MODE_START_STOP) and self._is_cable_connected():
-                if (
-                    self._essential_data_available()
-                    and self._planner_window_allows_start()
-                    and self._soc_allows_start()
-                ):
-                    self.hass.async_create_task(self._ensure_charging_enable_on())
-                    self._start_regulation_loop_if_needed()
-        self._evaluate_missing_and_start_no_data_timer()
+                if self._essential_data_available() and self._planner_window_allows_start() and self._soc_allows_start():
+                    async def _try_start_after_unlock():
+                        if self._priority_mode_enabled:
+                            await async_align_current_with_order(self.hass)
+                            cur = await async_get_priority(self.hass)
+                            if cur != self.entry.entry_id:
+                                _LOGGER.debug("Unlock start skipped: not current priority after align")
+                                return
+                        await self._start_charging_and_reclaim()
+                        self._start_regulation_loop_if_needed()
+                    self.hass.async_create_task(_try_start_after_unlock())
 
     @callback
     def _async_ev_soc_event(self, event: Event):
@@ -870,33 +879,20 @@ class EVLoadController:
         new = event.data.get("new_state")
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(
-                    self._ev_soc_entity, getattr(new, "state", None), "soc_transition", side="new"
-                )
+                self._report_unknown(self._ev_soc_entity, getattr(new, "state", None), "soc_transition", side="new")
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("soc_transition", side="old"):
-                    self._report_unknown(
-                        self._ev_soc_entity, getattr(old, "state", None), "soc_transition", side="old"
-                    )
+                    self._report_unknown(self._ev_soc_entity, getattr(old, "state", None), "soc_transition", side="old")
             return
         allows = self._soc_allows_start()
         prev = self._last_soc_allows
         self._last_soc_allows = allows
-        _LOGGER.debug(
-            "EV SOC change: %s -> %s (limit=%s, allows_start=%s, prev=%s)",
-            old.state if old else None,
-            new.state if new else None,
-            self._soc_limit_percent,
-            allows,
-            prev,
-        )
-        # Preempt: SOC False->True → align current naar first eligible
         if allows and prev is False and self._priority_mode_enabled:
             self.hass.async_create_task(async_align_current_with_order(self.hass))
         self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
 
-    # -------------------- Cable handling --------------------
+    # ---------------- Cable handling ----------------
     def _handle_cable_change(self, old_state, new_state):
         connected = (new_state.state if new_state else None) == STATE_ON
         if self._last_cable_connected is not None and connected == self._last_cable_connected:
@@ -912,11 +908,8 @@ class EVLoadController:
             return
         st = self.hass.states.get(self._cable_entity)
         if not self._is_known_state(st):
-            if self._is_unknownish_state(st):
-                if self._should_report_unknown("cable_initial", side="new"):
-                    self._report_unknown(
-                        self._cable_entity, getattr(st, "state", None), "cable_initial", side="new"
-                    )
+            if self._is_unknownish_state(st) and self._should_report_unknown("cable_initial", side="new"):
+                self._report_unknown(self._cable_entity, getattr(st, "state", None), "cable_initial", side="new")
             return
         self._last_cable_connected = st.state == STATE_ON
         if self._last_cable_connected:
@@ -926,18 +919,19 @@ class EVLoadController:
 
     async def _on_cable_connected(self):
         self._reset_timers()
+        await self._ensure_lock_locked()
+
         if self._current_setting_entity:
             with contextlib.suppress(Exception):
                 dom, _ = self._current_setting_entity.split(".", 1)
                 if dom == "number":
                     await self.hass.services.async_call(
-                        "number",
-                        "set_value",
+                        "number", "set_value",
                         {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
-                        blocking=True,
+                        blocking=True
                     )
 
-        # Priority restore / takeover / advance
+        # Priority preemption chain
         try:
             if self._priority_mode_enabled:
                 preferred = await async_get_preferred_priority(self.hass)
@@ -971,16 +965,17 @@ class EVLoadController:
         except Exception:
             _LOGGER.debug("Proactive advance failed", exc_info=True)
 
+        if self._priority_mode_enabled:
+            with contextlib.suppress(Exception):
+                await async_align_current_with_order(self.hass)
+                self._priority_allowed_cache = await self._is_priority_allowed()
+
+        # Manual mode handling
         if self.get_mode(MODE_MANUAL_AUTO):
             if self.get_mode(MODE_START_STOP):
-                if (
-                    self._priority_allowed_cache
-                    and self._essential_data_available()
-                    and self._planner_window_allows_start()
-                    and self._soc_allows_start()
-                ):
-                    await self._ensure_charging_enable_on()
-                    self._charging_active = True
+                if (self._priority_allowed_cache and self._essential_data_available()
+                    and self._planner_window_allows_start() and self._soc_allows_start()):
+                    await self._start_charging_and_reclaim()
                 else:
                     await self._ensure_charging_enable_off()
             else:
@@ -1016,48 +1011,60 @@ class EVLoadController:
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
         self._stop_resume_monitor()
+        self._stop_reclaim_monitor()
+        self._cancel_relock_task()
         self._charging_active = False
         self._reset_timers()
         await self._ensure_charging_enable_off()
+        await self._ensure_lock_locked()
         if self._current_setting_entity:
             with contextlib.suppress(Exception):
                 dom, _ = self._current_setting_entity.split(".", 1)
                 if dom == "number":
                     await self.hass.services.async_call(
-                        "number",
-                        "set_value",
+                        "number", "set_value",
                         {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
-                        blocking=True,
+                        blocking=True
                     )
 
-        # Advance to next priority if this entry was current
-        try:
-            if self._priority_mode_enabled:
-                cur = await async_get_priority(self.hass)
-                if cur == self.entry.entry_id:
-                    await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-        except Exception:
-            _LOGGER.debug("Advance on disconnect failed", exc_info=True)
-
-        # Start/Stop Reset policy: align Start/Stop with reset switch on disconnect
-        desired = self.get_mode(MODE_STARTSTOP_RESET)
-        if self.get_mode(MODE_START_STOP) != desired:
-            prev = self.get_mode(MODE_START_STOP)
-            self._modes[MODE_START_STOP] = desired
-            await self._save_unified_state()
-            _LOGGER.debug(
-                "Start/Stop Reset applied on disconnect: start_stop=%s (was %s)",
-                desired,
-                prev,
-            )
-            self._notify_mode_listeners()
-            if not desired:
-                await self._ensure_charging_enable_off()
-                self._charging_active = False
-
+        await self._advance_if_current()
         self._evaluate_missing_and_start_no_data_timer()
 
-    # -------------------- Auto-connect routine --------------------
+    # ---------------- Reclaim monitor ----------------
+    def _start_reclaim_monitor_if_needed(self):
+        if self._reclaim_task and not self._reclaim_task.done():
+            return
+        self._reclaim_task = self.hass.async_create_task(self._reclaim_monitor_loop())
+
+    def _stop_reclaim_monitor(self):
+        task = self._reclaim_task
+        self._reclaim_task = None
+        if task and not task.done():
+            task.cancel()
+
+    async def _reclaim_monitor_loop(self):
+        try:
+            while True:
+                if not self.get_mode(MODE_START_STOP) or not self._is_cable_connected():
+                    break
+                net = self._get_net_power_w()
+                if self._planner_window_allows_start() and self._soc_allows_start():
+                    if net is not None and net >= self._current_upper():
+                        with contextlib.suppress(Exception):
+                            await async_clear_priority_pause(self.hass, self.entry.entry_id, "below_lower", notify=False)
+                        if self._priority_mode_enabled:
+                            with contextlib.suppress(Exception):
+                                await async_align_current_with_order(self.hass)
+                        break
+                await asyncio.sleep(self._scan_interval)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            _LOGGER.warning("Reclaim monitor error: %s", exc)
+        finally:
+            self._reclaim_task = None
+
+    # ---------------- Auto-connect routine ----------------
     def _cancel_auto_connect_task(self):
         t = self._auto_connect_task
         self._auto_connect_task = None
@@ -1073,11 +1080,7 @@ class EVLoadController:
     async def _auto_connect_task_run(self):
         try:
             await asyncio.sleep(CONNECT_DEBOUNCE_SECONDS)
-            if (
-                not self._is_cable_connected()
-                or self.get_mode(MODE_MANUAL_AUTO)
-                or not self.get_mode(MODE_START_STOP)
-            ):
+            if (not self._is_cable_connected() or self.get_mode(MODE_MANUAL_AUTO) or not self.get_mode(MODE_START_STOP)):
                 return
             if not self._priority_allowed_cache:
                 return
@@ -1090,17 +1093,12 @@ class EVLoadController:
                 return
             net = self._get_net_power_w()
             if net is not None and net >= up:
-                await self._ensure_charging_enable_on()
-                self._charging_active = True
+                await self._start_charging_and_reclaim()
                 self._start_regulation_loop_if_needed()
                 return
             above_since: Optional[float] = None
             while True:
-                if (
-                    not self._is_cable_connected()
-                    or self.get_mode(MODE_MANUAL_AUTO)
-                    or not self.get_mode(MODE_START_STOP)
-                ):
+                if (not self._is_cable_connected() or self.get_mode(MODE_MANUAL_AUTO) or not self.get_mode(MODE_START_STOP)):
                     return
                 if not self._priority_allowed_cache:
                     return
@@ -1119,8 +1117,7 @@ class EVLoadController:
                     if above_since is None:
                         above_since = now
                     elif (now - above_since) >= EXPORT_SUSTAIN_SECONDS:
-                        await self._ensure_charging_enable_on()
-                        self._charging_active = True
+                        await self._start_charging_and_reclaim()
                         self._start_regulation_loop_if_needed()
                         return
                 else:
@@ -1131,7 +1128,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Auto-connect error: %s", exc)
 
-    # -------------------- Planner monitor --------------------
+    # ---------------- Planner monitor ----------------
     def _start_planner_monitor_if_needed(self):
         if not self._planner_enabled():
             self._stop_planner_monitor()
@@ -1152,23 +1149,13 @@ class EVLoadController:
             while self._planner_enabled():
                 allows = self._planner_window_allows_start()
                 if self.get_mode(MODE_START_STOP):
-                    if self._charging_active and not allows:
-                        _LOGGER.info("Planner monitor: window ended/invalid → pause.")
-                        self._charging_active = False
-                        await self._ensure_charging_enable_off()
-                        with contextlib.suppress(Exception):
-                            if self._current_setting_entity:
-                                await self._set_current_setting_a(MIN_CURRENT_A)
-                        self._stop_regulation_loop()
-                        # Advance bij gating
-                        try:
-                            if self._priority_mode_enabled:
-                                cur = await async_get_priority(self.hass)
-                                if cur == self.entry.entry_id:
-                                    await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                        except Exception:
-                            _LOGGER.debug("Advance on planner gating failed", exc_info=True)
-                    # Venster opent net → preempt/align en dan lokale logica
+                    if not allows:
+                        if self._charging_active:
+                            _LOGGER.info("Planner monitor: window ended/invalid → pause.")
+                            await self._pause_basic(set_current_to_min=True)
+                            await self._advance_if_current()
+                        else:
+                            await self._advance_if_current()
                     elif allows and previous_allows is False:
                         if self._priority_mode_enabled:
                             with contextlib.suppress(Exception):
@@ -1181,7 +1168,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Planner monitor error: %s", exc)
 
-    # -------------------- Hysteresis --------------------
+    # ---------------- Hysteresis logic ----------------
     def _current_upper(self) -> float:
         return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
 
@@ -1195,96 +1182,46 @@ class EVLoadController:
             self._charging_active = False
             self._stop_regulation_loop()
             self._stop_resume_monitor()
+            self._stop_reclaim_monitor()
+            self._cancel_relock_task()
             return
 
-        # Manual ON
         if self.get_mode(MODE_MANUAL_AUTO):
             self._reset_timers()
             self._stop_regulation_loop()
             self._stop_resume_monitor()
-
+            self._stop_reclaim_monitor()
             if not self._is_cable_connected():
                 self._charging_active = False
                 await self._ensure_charging_enable_off()
+                self._cancel_relock_task()
                 return
-
-            if not self._planner_window_allows_start():
+            if not (self._planner_window_allows_start() and self._soc_allows_start() and self._priority_allowed_cache):
                 if self._charging_active:
-                    _LOGGER.info("Planner window inactive (manual) → pause.")
-                    self._charging_active = False
-                    await self._ensure_charging_enable_off()
-                    if not preserve_current and self._current_setting_entity:
-                        with contextlib.suppress(Exception):
-                            await self._set_current_setting_a(MIN_CURRENT_A)
-                    # Advance
-                    try:
-                        if self._priority_mode_enabled:
-                            cur = await async_get_priority(self.hass)
-                            if cur == self.entry.entry_id:
-                                await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                    except Exception:
-                        _LOGGER.debug("Advance on manual planner gating failed", exc_info=True)
+                    _LOGGER.info("Manual gating → pause.")
+                    await self._pause_basic(set_current_to_min=not preserve_current)
                 return
-
-            if not self._soc_allows_start():
-                if self._charging_active:
-                    _LOGGER.info("SOC gating (manual) → pause.")
-                    self._charging_active = False
-                    await self._ensure_charging_enable_off()
-                    if not preserve_current and self._current_setting_entity:
-                        with contextlib.suppress(Exception):
-                            await self._set_current_setting_a(MIN_CURRENT_A)
-                    # Advance
-                    try:
-                        if self._priority_mode_enabled:
-                            cur = await async_get_priority(self.hass)
-                            if cur == self.entry.entry_id:
-                                await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                    except Exception:
-                        _LOGGER.debug("Advance on manual soc gating failed", exc_info=True)
-                return
-
-            if not self._priority_allowed_cache:
-                if self._charging_active:
-                    _LOGGER.info("Priority gating (manual) → pause.")
-                    self._charging_active = False
-                    await self._ensure_charging_enable_off()
-                    if not preserve_current and self._current_setting_entity:
-                        with contextlib.suppress(Exception):
-                            await self._set_current_setting_a(MIN_CURRENT_A)
-                return
-
             if (not self._charging_active) and self._essential_data_available():
-                await self._ensure_charging_enable_on()
-                self._charging_active = True
+                await self._start_charging_and_reclaim()
             return
 
-        # Manual OFF
         if not self._is_cable_connected():
             self._reset_timers()
             self._charging_active = False
             self._stop_regulation_loop()
             self._stop_resume_monitor()
+            self._stop_reclaim_monitor()
             await self._ensure_charging_enable_off()
+            self._cancel_relock_task()
             return
 
         if not self._planner_window_allows_start():
             if self._charging_active:
                 _LOGGER.info("Planner window inactive → pause.")
-                self._charging_active = False
-                await self._ensure_charging_enable_off()
-                if not preserve_current and self._current_setting_entity:
-                    with contextlib.suppress(Exception):
-                        await self._set_current_setting_a(MIN_CURRENT_A)
-                self._stop_regulation_loop()
-                # Advance
-                try:
-                    if self._priority_mode_enabled:
-                        cur = await async_get_priority(self.hass)
-                        if cur == self.entry.entry_id:
-                            await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                except Exception:
-                    _LOGGER.debug("Advance on planner gating failed", exc_info=True)
+                await self._pause_basic(set_current_to_min=not preserve_current)
+                await self._advance_if_current()
+            else:
+                await self._advance_if_current()
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             return
@@ -1292,32 +1229,15 @@ class EVLoadController:
         if not self._soc_allows_start():
             if self._charging_active:
                 _LOGGER.info("SOC gating → pause.")
-                self._charging_active = False
-                await self._ensure_charging_enable_off()
-                if not preserve_current and self._current_setting_entity:
-                    with contextlib.suppress(Exception):
-                        await self._set_current_setting_a(MIN_CURRENT_A)
-                self._stop_regulation_loop()
-                # Advance
-                try:
-                    if self._priority_mode_enabled:
-                        cur = await async_get_priority(self.hass)
-                        if cur == self.entry.entry_id:
-                            await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                except Exception:
-                    _LOGGER.debug("Advance on soc gating failed", exc_info=True)
+                await self._pause_basic(set_current_to_min=not preserve_current)
+                await self._advance_if_current()
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             return
 
         if not self._priority_allowed_cache:
             if self._charging_active:
-                self._charging_active = False
-                await self._ensure_charging_enable_off()
-                if not preserve_current and self._current_setting_entity:
-                    with contextlib.suppress(Exception):
-                        await self._set_current_setting_a(MIN_CURRENT_A)
-                self._stop_regulation_loop()
+                await self._pause_basic(set_current_to_min=not preserve_current)
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             return
@@ -1326,17 +1246,24 @@ class EVLoadController:
         if net is None or not self._essential_data_available():
             if not self._charging_active:
                 await self._ensure_charging_enable_off()
+                self._cancel_relock_task()
             self._start_resume_monitor_if_needed()
             self._start_regulation_loop_if_needed()
             return
 
         upper = self._current_upper()
         lower = self._current_lower()
+        charge_power = self._get_charge_power_w()
+
+        if self._is_status_charging() or (charge_power is not None and charge_power > 100):
+            if not self._relock_task:
+                _LOGGER.debug("Hysteresis: charging detected in-loop → scheduling relock watcher (direct)")
+                self._schedule_relock_after_charging_start(already_detected=True)
+
         if not self._charging_active:
             self._reset_timers()
             if net >= upper:
-                await self._ensure_charging_enable_on()
-                self._charging_active = True
+                await self._start_charging_and_reclaim()
                 self._stop_resume_monitor()
                 self._start_regulation_loop_if_needed()
             else:
@@ -1353,7 +1280,7 @@ class EVLoadController:
                 self._below_lower_since = None
                 self._cancel_below_lower_timer()
 
-    # -------------------- Timers --------------------
+    # ---------------- Timers base ----------------
     def _reset_timers(self):
         self._below_lower_since = None
         self._no_data_since = None
@@ -1374,11 +1301,12 @@ class EVLoadController:
 
     def _sustain_seconds(self) -> int:
         eff = _effective_config(self.entry)
+        raw = eff.get(CONF_SUSTAIN_SECONDS)
         try:
-            val = int(eff.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
+            val = int(raw) if raw not in (None, "") else DEFAULT_SUSTAIN_SECONDS
         except Exception:
             val = DEFAULT_SUSTAIN_SECONDS
-        return max(0, min(SUSTAIN_MAX_SECONDS, val))
+        return max(SUSTAIN_MIN_SECONDS, min(SUSTAIN_MAX_SECONDS, val))
 
     def _schedule_below_lower_timer(self):
         self._cancel_below_lower_timer()
@@ -1395,7 +1323,7 @@ class EVLoadController:
                     await asyncio.sleep(remaining)
                 if (
                     self._below_lower_since is not None
-                    and self._conditions_for_timers()
+                    and self._timer_base_conditions()
                     and self._is_still_below_lower()
                 ):
                     await self._pause_due_below_lower(duration)
@@ -1421,7 +1349,7 @@ class EVLoadController:
                     await asyncio.sleep(remaining)
                 if (
                     self._no_data_since is not None
-                    and self._conditions_for_timers()
+                    and self._timer_base_conditions()
                     and self._is_still_no_data()
                 ):
                     await self._pause_due_no_data(duration)
@@ -1442,6 +1370,16 @@ class EVLoadController:
             and self._soc_allows_start()
         )
 
+    def _timer_base_conditions(self) -> bool:
+        return (
+            not self.get_mode(MODE_MANUAL_AUTO)
+            and self.get_mode(MODE_START_STOP)
+            and self._is_cable_connected()
+            and self._planner_window_allows_start()
+            and self._soc_allows_start()
+            and (self._is_charging_enabled() or self._charging_active)
+        )
+
     def _is_still_below_lower(self) -> bool:
         net = self._get_net_power_w()
         return net is not None and net < self._current_lower()
@@ -1456,24 +1394,39 @@ class EVLoadController:
         return False
 
     async def _pause_due_below_lower(self, duration: int):
-        _LOGGER.info("Pause: net < lower for >= %ds", duration)
+        _LOGGER.info("Pause: net < lower for >= %ds → handover", duration)
         self._below_lower_since = None
         self._cancel_below_lower_timer()
         self._charging_active = False
         await self._ensure_charging_enable_off()
+        self._cancel_relock_task()
         self._stop_regulation_loop()
         self._start_resume_monitor_if_needed()
+        try:
+            if self._priority_mode_enabled:
+                await async_mark_priority_pause(self.hass, self.entry.entry_id, "below_lower", notify=False)
+                self._start_reclaim_monitor_if_needed()
+                self.hass.async_create_task(async_handover_after_pause(self.hass, self.entry.entry_id))
+        except Exception:
+            _LOGGER.error("Below-lower handover failed", exc_info=True)
 
     async def _pause_due_no_data(self, duration: int):
-        _LOGGER.info("Pause: missing data for >= %ds", duration)
+        _LOGGER.info("Pause: missing data for >= %ds → handover", duration)
         self._no_data_since = None
         self._cancel_no_data_timer()
         self._charging_active = False
         await self._ensure_charging_enable_off()
+        self._cancel_relock_task()
         self._stop_regulation_loop()
         self._start_resume_monitor_if_needed()
+        try:
+            if self._priority_mode_enabled:
+                await async_mark_priority_pause(self.hass, self.entry.entry_id, "no_data", notify=False)
+                self.hass.async_create_task(async_handover_after_pause(self.hass, self.entry.entry_id))
+        except Exception:
+            _LOGGER.error("No-data handover failed", exc_info=True)
 
-    # -------------------- Missing component helpers --------------------
+    # ---------------- Missing components ----------------
     def _current_missing_components(self) -> List[str]:
         items: List[str] = []
         if self._get_net_power_w() is None:
@@ -1487,7 +1440,7 @@ class EVLoadController:
     def _essential_data_available(self) -> bool:
         return not self._current_missing_components()
 
-    # -------------------- Regulation loop --------------------
+    # ---------------- Regulation loop ----------------
     def _start_regulation_loop_if_needed(self):
         if self._regulation_task and not self._regulation_task.done():
             return
@@ -1517,30 +1470,15 @@ class EVLoadController:
         try:
             while True:
                 if not self._should_regulate():
-                    if self._charging_active and (
-                        not self._planner_window_allows_start() or not self._soc_allows_start()
-                    ):
-                        parts: List[str] = []
+                    if self._charging_active and (not self._planner_window_allows_start() or not self._soc_allows_start()):
+                        parts = []
                         if not self._planner_window_allows_start():
                             parts.append("planner")
                         if not self._soc_allows_start():
                             parts.append("soc")
-                        _LOGGER.info(
-                            "RegLoop gating (%s) → pause to 6A.", "/".join(parts)
-                        )
-                        self._charging_active = False
-                        await self._ensure_charging_enable_off()
-                        if self._current_setting_entity:
-                            with contextlib.suppress(Exception):
-                                await self._set_current_setting_a(MIN_CURRENT_A)
-                        # Advance
-                        try:
-                            if self._priority_mode_enabled:
-                                cur = await async_get_priority(self.hass)
-                                if cur == self.entry.entry_id:
-                                    await async_advance_priority_to_next(self.hass, self.entry.entry_id)
-                        except Exception:
-                            _LOGGER.debug("Advance on regloop gating failed", exc_info=True)
+                        _LOGGER.info("RegLoop gating (%s) → pause.", "/".join(parts))
+                        await self._pause_basic(set_current_to_min=True)
+                        await self._advance_if_current()
                     break
 
                 if first_adjust_ready_at is None:
@@ -1555,24 +1493,20 @@ class EVLoadController:
                 missing = self._current_missing_components()
                 soc = self._get_ev_soc_percent()
                 conf_max_a = self._max_current_a()
-
                 reg_min = self._effective_regulation_min_power()
+
                 _LOGGER.debug(
                     "RegTick: net=%s target=%s currentA=%s status=%s enable=%s charge_power=%s soc=%s limit=%s active=%s missing=%s maxA=%s regMin=%s profile=%s",
-                    net,
-                    self._net_power_target_w,
-                    current_a_dbg,
-                    status,
-                    self._is_charging_enabled(),
-                    charge_power,
-                    soc,
-                    self._soc_limit_percent,
-                    self._charging_active,
-                    ",".join(missing) if missing else "-",
-                    conf_max_a,
-                    reg_min,
-                    self._supply_profile_key,
+                    net, self._net_power_target_w, current_a_dbg, status,
+                    self._is_charging_enabled(), charge_power, soc, self._soc_limit_percent,
+                    self._charging_active, ",".join(missing) if missing else "-", conf_max_a,
+                    reg_min, self._supply_profile_key
                 )
+
+                if self._is_status_charging() or (charge_power is not None and charge_power > 100):
+                    if not self._relock_task:
+                        _LOGGER.debug("RegLoop: charging detected → scheduling relock watcher (direct)")
+                        self._schedule_relock_after_charging_start(already_detected=True)
 
                 if net is not None:
                     lower = self._current_lower()
@@ -1590,17 +1524,9 @@ class EVLoadController:
                             self._below_lower_since = None
                             self._cancel_below_lower_timer()
 
-                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(self._supply_profile_key)
-                if not thr:
-                    if self._wallbox_three_phase:
-                        inc_export = 700
-                        dec_import = 200
-                    else:
-                        inc_export = 250
-                        dec_import = 0
-                else:
-                    inc_export = thr["export_inc_w"]
-                    dec_import = thr["import_dec_w"]
+                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(self._supply_profile_key) or {}
+                inc_export = thr.get("export_inc_w", 700 if self._wallbox_three_phase else 250)
+                dec_import = thr.get("import_dec_w", 200 if self._wallbox_three_phase else 0)
 
                 if (
                     net is not None
@@ -1610,40 +1536,31 @@ class EVLoadController:
                     and self._soc_allows_start()
                 ):
                     now = time.monotonic()
-                    if charge_power is not None:
-                        if charge_power >= reg_min and now >= (first_adjust_ready_at or 0):
-                            # Deviation = net - target
-                            deviation = net - self._net_power_target_w
-                            export_w = deviation if deviation > 0 else 0.0
-                            import_w = -deviation if deviation < 0 else 0.0
-                            current_a = await self._get_current_setting_a()
-                            if current_a is not None:
-                                new_a = current_a
-                                if export_w >= inc_export and current_a < conf_max_a:
-                                    new_a = min(conf_max_a, current_a + 1)
-                                elif import_w >= dec_import and current_a > MIN_CURRENT_A:
-                                    new_a = max(MIN_CURRENT_A, current_a - 1)
-                                if new_a != current_a:
-                                    _LOGGER.debug(
-                                        "Adjust current: dev=%s export=%s import=%s inc_thr=%s dec_thr=%s %s→%sA",
-                                        deviation,
-                                        export_w,
-                                        import_w,
-                                        inc_export,
-                                        dec_import,
-                                        current_a,
-                                        new_a,
-                                    )
-                                    await self._set_current_setting_a(new_a)
+                    if charge_power is not None and charge_power >= reg_min and now >= (first_adjust_ready_at or 0):
+                        deviation = net - self._net_power_target_w
+                        export_w = deviation if deviation > 0 else 0.0
+                        import_w = -deviation if deviation < 0 else 0.0
+                        current_a = await self._get_current_setting_a()
+                        if current_a is not None:
+                            new_a = current_a
+                            if export_w >= inc_export and current_a < conf_max_a:
+                                new_a = min(conf_max_a, current_a + 1)
+                            elif import_w >= dec_import and current_a > MIN_CURRENT_A:
+                                new_a = max(MIN_CURRENT_A, current_a - 1)
+                            if new_a != current_a:
+                                _LOGGER.debug(
+                                    "Adjust current: dev=%s export=%s import=%s inc_thr=%s dec_thr=%s %s→%sA",
+                                    deviation, export_w, import_w, inc_export, dec_import, current_a, new_a
+                                )
+                                await self._set_current_setting_a(new_a)
 
                 await asyncio.sleep(self._scan_interval)
-
         except asyncio.CancelledError:
             return
         except Exception as exc:
             _LOGGER.warning("Regulation loop error: %s", exc)
 
-    # -------------------- Resume monitor --------------------
+    # ---------------- Resume monitor ----------------
     def _start_resume_monitor_if_needed(self):
         if self._resume_task and not self._resume_task.done():
             return
@@ -1670,17 +1587,22 @@ class EVLoadController:
         try:
             while self._should_resume_monitor():
                 if (not self._planner_window_allows_start()) or (not self._soc_allows_start()):
-                    await asyncio.sleep(self._scan_interval)
-                    continue
+                    await asyncio.sleep(self._scan_interval); continue
                 if not self._essential_data_available():
-                    await asyncio.sleep(self._scan_interval)
-                    continue
+                    await asyncio.sleep(self._scan_interval); continue
                 net = self._get_net_power_w()
                 if net is not None:
                     upper = self._current_upper()
                     if net >= upper and self.get_mode(MODE_START_STOP):
-                        await self._ensure_charging_enable_on()
-                        self._charging_active = True
+                        if self._priority_mode_enabled:
+                            with contextlib.suppress(Exception):
+                                await async_align_current_with_order(self.hass)
+                                await self._refresh_priority_mode_flag()
+                                self._priority_allowed_cache = await self._is_priority_allowed()
+                            if not self._priority_allowed_cache:
+                                await asyncio.sleep(self._scan_interval)
+                                continue
+                        await self._start_charging_and_reclaim()
                         self._stop_resume_monitor()
                         self._start_regulation_loop_if_needed()
                         return
@@ -1690,7 +1612,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Resume loop error: %s", exc)
 
-    # -------------------- Sensor getters / ensure helpers --------------------
+    # ---------------- Sensor getters / setters ----------------
     def _get_wallbox_status(self) -> Optional[str]:
         if not self._wallbox_status_entity:
             return None
@@ -1721,10 +1643,9 @@ class EVLoadController:
             dom, _ = self._current_setting_entity.split(".", 1)
             if dom == "number":
                 await self.hass.services.async_call(
-                    "number",
-                    "set_value",
+                    "number", "set_value",
                     {"entity_id": self._current_setting_entity, "value": amps},
-                    blocking=True,
+                    blocking=True
                 )
 
     def _is_cable_connected(self) -> bool:
@@ -1741,9 +1662,7 @@ class EVLoadController:
             return False
         st = self.hass.states.get(self._charging_enable_entity)
         if not self._is_known_state(st):
-            self._report_unknown(
-                self._charging_enable_entity, getattr(st, "state", None), "charging_enable_get"
-            )
+            self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "charging_enable_get")
             return False
         return st.state == STATE_ON
 
@@ -1786,30 +1705,31 @@ class EVLoadController:
             if self._is_known_state(st) and st.state == STATE_OFF:
                 return
             if not self._is_known_state(st):
-                self._report_unknown(
-                    self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_off"
-                )
-            await self.hass.services.async_call(
-                "switch", "turn_off", {"entity_id": self._charging_enable_entity}, blocking=True
-            )
+                self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_off")
+            await self.hass.services.async_call("switch", "turn_off", {"entity_id": self._charging_enable_entity}, blocking=True)
+        self._cancel_relock_task()
 
     async def _ensure_charging_enable_on(self):
         if not self._charging_enable_entity or not self.get_mode(MODE_START_STOP):
             return
+        if not self._is_lock_unlocked():
+            ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
+            if not ok:
+                _LOGGER.info("Enable ON skipped: lock could not be unlocked")
+                return
         with contextlib.suppress(Exception):
             dom, _ = self._charging_enable_entity.split(".", 1)
             if dom != "switch":
                 return
             st = self.hass.states.get(self._charging_enable_entity)
             if self._is_known_state(st) and st.state == STATE_ON:
+                if not self._relock_task:
+                    self._schedule_relock_after_charging_start()
                 return
             if not self._is_known_state(st):
-                self._report_unknown(
-                    self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_on"
-                )
-            await self.hass.services.async_call(
-                "switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True
-            )
+                self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_on")
+            await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
+            self._schedule_relock_after_charging_start()
 
     async def _enforce_start_stop_policy(self):
         if not self.get_mode(MODE_START_STOP):
@@ -1817,11 +1737,13 @@ class EVLoadController:
             self._stop_regulation_loop()
             self._stop_resume_monitor()
             self._stop_planner_monitor()
+            self._stop_reclaim_monitor()
+            self._cancel_relock_task()
             self._charging_active = False
             self._reset_timers()
             await self._ensure_charging_enable_off()
 
-    # -------------------- Mode management --------------------
+    # ---------------- Mode management ----------------
     def get_mode(self, mode: str) -> bool:
         return bool(self._modes.get(mode, False))
 
@@ -1832,103 +1754,91 @@ class EVLoadController:
             if mode == MODE_START_STOP:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Start/Stop toggle updated → %s", enabled)
-                    # Baseline to 6A on any Start/Stop toggle
+                    _LOGGER.debug("Start/Stop toggle → %s", enabled)
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
-                    # Enforce policy and advance to next if current
                     self.hass.async_create_task(self._enforce_start_stop_policy())
-                    if self._priority_mode_enabled:
-                        self.hass.async_create_task(async_advance_priority_to_next(self.hass, self.entry.entry_id))
+                    self.hass.async_create_task(self._advance_if_current())
                 if enabled and previous is False:
-                    # Preempt/align naar first eligible (kan onszelf of een andere zijn)
                     if self._priority_mode_enabled:
                         self.hass.async_create_task(async_align_current_with_order(self.hass))
                     if self.get_mode(MODE_MANUAL_AUTO):
-                        if (
-                            self._is_cable_connected()
-                            and self._essential_data_available()
-                            and self._planner_window_allows_start()
-                            and self._soc_allows_start()
-                            and self._priority_allowed_cache
-                        ):
-                            self.hass.async_create_task(self._ensure_charging_enable_on())
-                            self._charging_active = True
-                        else:
-                            self.hass.async_create_task(self._ensure_charging_enable_off())
-                            if not self._essential_data_available():
-                                _LOGGER.debug(
-                                    "Manual start blocked: missing %s",
-                                    ",".join(self._current_missing_components()),
-                                )
-                        self._stop_regulation_loop()
-                        self._stop_resume_monitor()
+                        async def _after_enable_manual():
+                            if (
+                                self._is_cable_connected() and self._essential_data_available()
+                                and self._planner_window_allows_start() and self._soc_allows_start()
+                                and self._priority_allowed_cache
+                            ):
+                                await self._start_charging_and_reclaim()
+                            else:
+                                await self._ensure_charging_enable_off()
+                            self._stop_regulation_loop()
+                            self._stop_resume_monitor()
+                        self.hass.async_create_task(_after_enable_manual())
                     self.hass.async_create_task(self._hysteresis_apply())
                     self._start_regulation_loop_if_needed()
                 return
 
             if mode == MODE_ECO:
                 if previous != enabled and not self.get_mode(MODE_MANUAL_AUTO):
-                    self.hass.async_create_task(
-                        self._hysteresis_apply(preserve_current=True)
-                    )
+                    self.hass.async_create_task(self._hysteresis_apply(preserve_current=True))
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("ECO toggle updated → %s", enabled)
+                    _LOGGER.debug("ECO toggle → %s", enabled)
                 return
 
             if mode == MODE_MANUAL_AUTO:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Manual toggle updated → %s", enabled)
-                    # Baseline to 6A on any Manual toggle
+                    _LOGGER.debug("Manual toggle → %s", enabled)
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if enabled:
                     self._reset_timers()
-                    if (
-                        self._is_cable_connected()
-                        and self.get_mode(MODE_START_STOP)
-                        and self._essential_data_available()
-                        and self._planner_window_allows_start()
-                        and self._soc_allows_start()
-                        and self._priority_allowed_cache
-                    ):
-                        self.hass.async_create_task(self._ensure_charging_enable_on())
-                        self._charging_active = True
-                    else:
-                        self.hass.async_create_task(self._ensure_charging_enable_off())
-                        if not self._essential_data_available():
-                            _LOGGER.debug(
-                                "Manual start blocked: missing %s",
-                                ",".join(self._current_missing_components()),
-                            )
-                    self._stop_regulation_loop()
-                    self._stop_resume_monitor()
+                    self._stop_reclaim_monitor()
+                    self._cancel_relock_task()
+                    async def _enter_manual():
+                        if (
+                            self._is_cable_connected() and self.get_mode(MODE_START_STOP)
+                            and self._essential_data_available() and self._planner_window_allows_start()
+                            and self._soc_allows_start() and self._priority_allowed_cache
+                        ):
+                            await self._start_charging_and_reclaim()
+                        else:
+                            await self._ensure_charging_enable_off()
+                        self._stop_regulation_loop()
+                        self._stop_resume_monitor()
+                    self.hass.async_create_task(_enter_manual())
                 else:
-                    self.hass.async_create_task(self._hysteresis_apply())
+                    async def _after_manual_off():
+                        await self._hysteresis_apply()
+                        self._start_regulation_loop_if_needed()
+                        self._start_resume_monitor_if_needed()
+                    self.hass.async_create_task(_after_manual_off())
                 return
 
             if mode == MODE_CHARGE_PLANNER:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Planner toggle updated → %s", enabled)
+                    _LOGGER.debug("Planner toggle → %s", enabled)
                 if enabled:
                     self._start_planner_monitor_if_needed()
                 else:
                     self._stop_planner_monitor()
+                    if self._priority_mode_enabled:
+                        self.hass.async_create_task(async_align_current_with_order(self.hass))
                 self.hass.async_create_task(self._hysteresis_apply())
                 return
 
             if mode == MODE_STARTSTOP_RESET:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Start/Stop Reset toggle updated → %s", enabled)
+                    _LOGGER.debug("Start/Stop Reset toggle → %s", enabled)
                 return
         finally:
             self._notify_mode_listeners()
 
-    # -------------------- Public helper --------------------
+    # ---------------- Public helpers ----------------
     def get_min_charge_power_w(self) -> int:
         return self._effective_min_charge_power()
