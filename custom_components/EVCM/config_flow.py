@@ -132,7 +132,7 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     }
     num_sel_s = {
         "number": {
-            "min": SUSTAIN_MIN_SECONDS,   # min via constant
+            "min": SUSTAIN_MIN_SECONDS,  # min via constant
             "max": SUSTAIN_MAX_SECONDS,
             "step": 1,
             "mode": "box",
@@ -285,7 +285,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for k, v in (user_input or {}).items():
             self._s_defaults[k] = v
 
-        # Validatie thresholds
+        # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER),
@@ -443,7 +443,7 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         for k, v in (user_input or {}).items():
             self._values[k] = v
 
-        # Validatie thresholds
+        # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER),
