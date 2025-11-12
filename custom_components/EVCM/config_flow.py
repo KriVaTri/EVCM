@@ -5,7 +5,7 @@ from typing import Optional, Dict, List, Tuple
 import logging
 
 from homeassistant import config_entries
-from homeassistant.core import callback, State
+from homeassistant.core import callback
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.helpers.selector import selector
 from homeassistant.helpers import entity_registry as er
@@ -58,6 +58,12 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# New debounce option (kept local for compat; not in const.py)
+CONF_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
+DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
+UPPER_DEBOUNCE_MIN_SECONDS = 0
+UPPER_DEBOUNCE_MAX_SECONDS = 60
 
 
 def _merged(entry: config_entries.ConfigEntry) -> dict:
@@ -166,6 +172,15 @@ def _build_sensors_schema(
             "unit_of_measurement": "A",
         }
     }
+    num_sel_upper_debounce = {
+        "number": {
+            "min": UPPER_DEBOUNCE_MIN_SECONDS,
+            "max": UPPER_DEBOUNCE_MAX_SECONDS,
+            "step": 1,
+            "mode": "box",
+            "unit_of_measurement": "s",
+        }
+    }
 
     fields: dict = {}
 
@@ -205,13 +220,16 @@ def _build_sensors_schema(
     else:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL)] = selector({"entity": {"domain": "sensor"}})
 
+    # Other controls
     fields[vol.Required(CONF_MAX_CURRENT_LIMIT_A, default=defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))] = selector(num_sel_a)
 
+    # Thresholds
     fields[vol.Required(CONF_ECO_ON_UPPER, default=defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_ON_LOWER, default=defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_UPPER, default=defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
+    # Timers and intervals
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
             "number": {
@@ -223,6 +241,8 @@ def _build_sensors_schema(
             }
         }
     )
+    # Place upper debounce directly under scan interval
+    fields[vol.Required(CONF_UPPER_DEBOUNCE_SECONDS, default=defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))] = selector(num_sel_upper_debounce)
     fields[vol.Required(CONF_SUSTAIN_SECONDS, default=defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))] = selector(num_sel_s)
 
     return vol.Schema(fields)
@@ -256,10 +276,8 @@ def _find_device_candidates(hass, device_id: str, domain: str) -> list[str]:
         try:
             if entry.device_id != device_id:
                 continue
-            # Skip disabled entities
             if getattr(entry, "disabled_by", None) is not None:
                 continue
-            # Match domain (RegistryEntry may or may not have .domain across HA versions)
             edomain = getattr(entry, "domain", None) or entry.entity_id.split(".", 1)[0]
             if edomain != domain:
                 continue
@@ -271,8 +289,6 @@ def _find_device_candidates(hass, device_id: str, domain: str) -> list[str]:
 
 def _prefer_by_keywords(hass, candidates: List[str], include_any: List[str], bonus_any: Optional[List[str]] = None,
                         exclude_any: Optional[List[str]] = None) -> Tuple[List[str], Dict[str, int]]:
-    """Rank candidates by keyword occurrence in entity_id or registry name.
-    Return (best_ties, score_map)."""
     if not candidates:
         return [], {}
     bonus_any = bonus_any or []
@@ -291,123 +307,17 @@ def _prefer_by_keywords(hass, candidates: List[str], include_any: List[str], bon
             if kw in name:
                 score -= 3
         score_map[eid] = score
-    if not score_map:
-        return candidates, {}
-    max_score = max(score_map.values())
+    max_score = max(score_map.values()) if score_map else 0
     best = [eid for eid, sc in score_map.items() if sc == max_score]
     return (best if max_score > 0 else candidates), score_map
 
 
-def _score_charge_power(hass, eid: str) -> int:
-    """Heuristic score for selecting the best 'charge power' sensor on a device."""
-    score = 0
-    st: Optional[State] = None
-    try:
-        st = hass.states.get(eid)
-    except Exception:
-        st = None
-
-    # Registry hints
-    reg = _get_reg_entry(hass, eid)
-    reg_dc = getattr(reg, "original_device_class", None) if reg else None
-
-    # Device class preference
-    dc = st.attributes.get("device_class") if st else None
-    if dc == "power" or reg_dc == "power":
-        score += 8
-
-    # Unit preference
-    unit = st.attributes.get("unit_of_measurement") if st else None
-    if unit in ("W", "kW"):
-        score += 6
-    if unit in ("kWh",):
-        score -= 6  # energy, not power
-
-    # State class: measurement vs totals
-    sclass = st.attributes.get("state_class") if st else None
-    if sclass == "measurement":
-        score += 4
-    if sclass and sclass.startswith("total"):
-        score -= 6
-
-    name = f"{eid}|{_get_registry_name(hass, eid)}".lower()
-
-    # Positive keywords
-    for kw, pts in [
-        ("charge_power", 8),
-        ("charging_power", 8),
-        ("charger_power", 6),
-        ("evse_power", 6),
-        ("ev_power", 5),
-        ("wallbox_power", 5),
-        ("power", 2),
-        ("charge", 2),
-        ("charging", 2),
-        ("ev", 1),
-        ("wallbox", 1),
-        ("charger", 1),
-    ]:
-        if kw in name:
-            score += pts
-
-    # Negative keywords (not the charger power)
-    for kw, pts in [
-        ("grid", -6),
-        ("import", -6),
-        ("export", -6),
-        ("solar", -6),
-        ("pv", -6),
-        ("home", -4),
-        ("house", -4),
-        ("total", -4),
-        ("sum", -4),
-        ("accumulated", -4),
-        ("energy", -6),
-        ("session_energy", -8),
-        ("l1", -3),
-        ("l2", -3),
-        ("l3", -3),
-        ("phase", -3),
-    ]:
-        if kw in name:
-            score += pts
-
-    return score
-
-
-def _select_single_charge_power(hass, candidates: List[str]) -> Optional[str]:
-    """Return a single best candidate for charge power, or None if ambiguous."""
-    if not candidates:
-        return None
-    scored = [(eid, _score_charge_power(hass, eid)) for eid in candidates]
-    # Find unique highest
-    scored.sort(key=lambda x: x[1], reverse=True)
-    if not scored:
-        return None
-    top_eid, top_score = scored[0]
-    # If multiple share top score, ambiguous
-    ties = [eid for eid, sc in scored if sc == top_score]
-    if top_score <= 0:
-        return None
-    if len(ties) == 1:
-        return top_eid
-    return None
-
-
 def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[str]:
-    """Refine candidates using state attributes and keyword heuristics per key."""
     if not candidates:
         return []
     refined = list(candidates)
-
     if key == CONF_CHARGE_POWER:
-        # If we can pick a unique best, return it directly
-        pick = _select_single_charge_power(hass, refined)
-        if pick:
-            return [pick]
-
-        # Otherwise narrow down:
-        # 1) Prefer sensors with device_class power or unit W/kW
+        # 1) device_class power or unit W/kW
         power_like = []
         for eid in refined:
             st = hass.states.get(eid)
@@ -421,23 +331,7 @@ def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[st
             return power_like
         if len(power_like) > 1:
             refined = power_like
-
-        # 2) Avoid totals/energy
-        measurement_like = []
-        for eid in refined:
-            st = hass.states.get(eid)
-            if not st:
-                continue
-            sclass = st.attributes.get("state_class")
-            unit = st.attributes.get("unit_of_measurement")
-            if sclass == "measurement" and unit in ("W", "kW"):
-                measurement_like.append(eid)
-        if len(measurement_like) == 1:
-            return measurement_like
-        if len(measurement_like) > 1:
-            refined = measurement_like
-
-        # 3) Prefer keywords; penalize grid/solar/pv/etc.
+        # 2) preferences by keywords
         refined, _ = _prefer_by_keywords(
             hass,
             refined,
@@ -448,7 +342,6 @@ def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[st
         return refined
 
     if key == CONF_WALLBOX_STATUS:
-        # Prefer enum-like sensors (device_class enum) if available
         enum_like = []
         for eid in refined:
             st = hass.states.get(eid)
@@ -460,36 +353,27 @@ def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[st
             return enum_like
         if len(enum_like) > 1:
             refined = enum_like
-        # Keyword preference: 'status', 'charging_status', 'state'
         refined, _ = _prefer_by_keywords(
             hass,
             refined,
             include_any=["status", "charging_status", "ev_status", "wallbox_status", "state"],
             bonus_any=["charge", "charging", "ev", "wallbox"],
         )
-        only_status = [eid for eid in refined if "status" in (eid.lower() + "|" + _get_registry_name(hass, eid).lower())]
-        if len(only_status) == 1:
-            return only_status
         return refined
 
-    # Other keys: leave as-is
     return refined
 
 
 def _autofill_from_device(hass, defaults: dict, device_id: Optional[str]) -> None:
-    """Prefill defaults for filterable keys when a single best candidate is found on the selected device."""
     if not device_id:
         return
     for key, domain in KEY_DOMAIN_MAP.items():
-        # Do not override if already provided/non-empty
         if defaults.get(key):
             continue
         candidates = _find_device_candidates(hass, device_id, domain)
         if not candidates:
             continue
-        # Refine based on heuristics
         refined = _refine_candidates_for_key(hass, candidates, key)
-        # If refinement yields a single candidate, use it
         if len(refined) == 1:
             defaults[key] = refined[0]
             _LOGGER.debug("Auto-filled %s with %s (from %d candidates)", key, refined[0], len(candidates))
@@ -542,6 +426,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_LOCK_SENSOR: "",
             CONF_CURRENT_SETTING: "",
             CONF_EV_BATTERY_LEVEL: "",
+            CONF_UPPER_DEBOUNCE_SECONDS: DEFAULT_UPPER_DEBOUNCE_SECONDS,
             CONF_MAX_CURRENT_LIMIT_A: 16,
             CONF_ECO_ON_UPPER: DEFAULT_ECO_ON_UPPER,
             CONF_ECO_ON_LOWER: DEFAULT_ECO_ON_LOWER,
@@ -570,12 +455,11 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._s_defaults is None:
             self._s_defaults = {}
 
-        # Before showing the form: apply auto-prefill from selected device (only once or when empty values)
+        # Autofill from selected device (first rendering)
         if user_input is None and self._selected_device:
             _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
 
         if user_input is None:
-            # Build schema with filtering; fallback to unfiltered if HA version doesn't support device filter
             try:
                 schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
                 return self.async_show_form(
@@ -612,13 +496,21 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Sustain (min via constant)
+        # Sustain
         try:
             st = int(self._s_defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
             if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
                 raise ValueError
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
+
+        # Upper debounce
+        try:
+            ud = int(self._s_defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))
+            if ud < UPPER_DEBOUNCE_MIN_SECONDS or ud > UPPER_DEBOUNCE_MAX_SECONDS:
+                raise ValueError
+        except Exception:
+            errors[CONF_UPPER_DEBOUNCE_SECONDS] = "value_out_of_range"
 
         # Max current
         try:
@@ -629,10 +521,6 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
         if errors:
-            # Re-apply auto-prefill for any still-empty fields (if device selected)
-            if self._selected_device:
-                _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
-            # Try filtered schema first, then fallback
             try:
                 schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
             except Exception as exc:
@@ -744,6 +632,7 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
                 CONF_LOCK_SENSOR: eff.get(CONF_LOCK_SENSOR, ""),
                 CONF_CURRENT_SETTING: eff.get(CONF_CURRENT_SETTING, ""),
                 CONF_EV_BATTERY_LEVEL: eff.get(CONF_EV_BATTERY_LEVEL, ""),
+                CONF_UPPER_DEBOUNCE_SECONDS: eff.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS),
                 CONF_MAX_CURRENT_LIMIT_A: eff.get(CONF_MAX_CURRENT_LIMIT_A, 16),
                 CONF_ECO_ON_UPPER: eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER),
                 CONF_ECO_ON_LOWER: eff.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER),
@@ -753,11 +642,9 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
                 CONF_SUSTAIN_SECONDS: eff.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS),
             }
 
-        # Before showing the form: apply auto-prefill from selected device for empty fields
-        if user_input is None and self._selected_device:
-            _autofill_from_device(self.hass, self._values, self._selected_device)
-
         if user_input is None:
+            if self._selected_device:
+                _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
                 schema = _build_sensors_schema(grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
@@ -788,13 +675,21 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Validate sustain (min via constant)
+        # Validate sustain
         try:
             st = int(self._values.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
             if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
                 raise ValueError
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
+
+        # Validate upper debounce
+        try:
+            ud = int(self._values.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))
+            if ud < UPPER_DEBOUNCE_MIN_SECONDS or ud > UPPER_DEBOUNCE_MAX_SECONDS:
+                raise ValueError
+        except Exception:
+            errors[CONF_UPPER_DEBOUNCE_SECONDS] = "value_out_of_range"
 
         # Max current
         try:
@@ -805,7 +700,6 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
         if errors:
-            # Re-apply auto-prefill for any still-empty fields (if device selected)
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
@@ -818,7 +712,6 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
 
         new_opts = dict(self.config_entry.options)
         new_opts[CONF_GRID_SINGLE] = bool(grid_single)
-
         new_opts[CONF_SUPPLY_PROFILE] = profile_key
         new_opts[CONF_WALLBOX_THREE_PHASE] = bool(profile_meta.get("phases", 1) == 3)
 
