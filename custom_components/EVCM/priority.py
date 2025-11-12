@@ -13,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 PRIORITY_STORE_VERSION = 1
 PRIORITY_STORE_KEY = f"{DOMAIN}_global"
 
-# Runtime (niet persistent) pauzes
+# Runtime (non-persistent) pauses
 _PAUSES_KEY = "priority_pauses"
 VALID_PAUSE_REASONS = {"below_lower", "no_data"}
 
