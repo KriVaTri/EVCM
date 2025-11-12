@@ -203,7 +203,7 @@ EVCM creates a set of switches per configured entry:
 
 Notes:
 - Priority Charging is a global flag; each entry exposes a proxy switch that reads/writes the same global value and stays in sync via events.
-- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state; only the user can change Start/Stop Reset.
+- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state.
 
 ---
 
