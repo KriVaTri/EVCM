@@ -23,6 +23,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [2. Key features](#2-key-features)  
 - [3. Installation](#3-installation)  
 - [4. Configuration flow](#4-configuration-flow)  
+- [Compatibility and required entities](#compatibility-and-required-entities)
 - [Supply Profiles and Net Power Target](#supply-profiles-and-net-power-target)
 - [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
 - [6. Priority charging behavior](#6-priority-charging-behavior)  
@@ -78,14 +79,12 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 ## 3) Installation
 
-- Use HACS and add a custom repository, copy https://github.com/KriVaTri/EVCM into the repository field and choose integration as type.
+- Use HACS and add a custom repository, copy [https://github.com/KriVaTri/EVCM](https://github.com/KriVaTri/EVCM) into the repository field and choose integration as type.
 
 - Or Copy the folder `custom_components/evcm/` into your Home Assistant configuration directory.
 Ensure `manifest.json` contains `"domain": "evcm"`.
 Restart Home Assistant.
 Add the integration via Settings → Devices & Services → “EVCM”.
-
-
 
 ---
 
@@ -127,6 +126,27 @@ Validation includes:
 - Scan interval ≥ minimum
 
 All numeric inputs use integer steps and input boxes.
+
+---
+
+## Compatibility and required entities
+
+Originally designed for Wallbox chargers (e.g. Copper SB and the Pulsar series), EVCM can also work with other EV chargers as long as the following entities are available:
+
+Required charger entities (must be provided by the charger integration):
+- Charge power: sensor (W/kW)
+- Charger status: sensor (e.g. enum/text state)
+- Cable connected: binary_sensor
+- Charging enable: switch
+- Lock: lock
+
+Required grid input:
+- Grid power sensor: either a single net power sensor (export positive, import negative) or separate Import and Export sensors (both positive-only, net = Export − Import).
+
+Optional:
+- EV SoC sensor (percentage)
+
+When these entities are present and correctly mapped during setup, EVCM’s automation, gating, and regulation features work across a broad range of EVSE brands.
 
 ---
 
