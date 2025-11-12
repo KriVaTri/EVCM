@@ -1,0 +1,17 @@
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Install hassfest
+        run: pip install hassfest
+      - name: Run hassfest
+        run: hassfest
