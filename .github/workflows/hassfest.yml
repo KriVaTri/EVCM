@@ -1,40 +1,28 @@
-name: Validate with hassfest
+name: HassFest
 
 on:
   push:
-    branches:
-      - main
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  hassfest:
-    name: Hassfest
+  validate:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      # Debug what the runner actually has
+      - name: Show workspace and integration paths
+        run: |
+          echo "Workspace: $PWD"
+          ls -la
+          echo "List custom_components:"
+          ls -la custom_components || true
+          echo "List custom_components/evcm:"
+          ls -la custom_components/evcm || true
+
+      # Run HassFest via container action (no repo action refs involved)
+      - name: HassFest (container)
+        uses: docker://ghcr.io/home-assistant/hassfest:latest
         with:
-          python-version: "3.11"
-
-      - name: Disable git credential helpers (prevent interactive prompts)
-        run: |
-          # Unset any configured credential helper(s) that might prompt
-          git config --global --unset-all credential.helper || true
-          git config --global credential.helper '' || true
-          # Prevent askpass from being used interactively
-          git config --global core.askPass /bin/true || true
-
-      - name: Install hassfest from GitHub (non-interactive)
-        env:
-          GIT_TERMINAL_PROMPT: 0
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade "git+https://github.com/home-assistant/hassfest.git@main"
-
-      - name: Run hassfest
-        run: |
-          python -m hassfest .
+          args: --integration-path /github/workspace/custom_components/evcm
