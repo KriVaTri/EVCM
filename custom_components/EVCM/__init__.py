@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 
 from .const import (
     DOMAIN,
@@ -49,6 +50,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "controller": controller,
         "last_options": dict(entry.options),
     }
+
+    # Post-start hook: must schedule in a thread-safe way.
+    # hass.add_job is safe from any context; @callback ensures listener runs in loop.
+    if hass.is_running:
+        hass.add_job(controller.async_post_start)
+    else:
+        @callback
+        def _on_started(_event):
+            hass.add_job(controller.async_post_start)
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
 
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
