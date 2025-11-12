@@ -106,9 +106,9 @@ class EVLoadController:
     """
     Lock gedrag:
     - Kabel uit → lock geforceerd locked.
-    - Kabel in → lock eerst locked; integratie unlockt automatisch wanneer starten mag.
-    - Start voorwaarden groen → unlock + charging enable ON.
-    - Laden gedetecteerd → na 30s lock automatisch weer locked (sessie blijft actief).
+    - Kabel in → lock eerst locked; integratie unlockt automatisch wanneer eerste start vereist is.
+    - Initial start: unlock + charging enable ON; na ladenstart auto re-lock.
+    - Resume starts na pauze (SOC/planner/below-lower/etc.): eerst proberen te starten met lock locked; pas als fallback kort unlocken.
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -206,6 +206,30 @@ class EVLoadController:
         # Trackers
         self._last_soc_allows: Optional[bool] = None
         self._last_missing_nonempty: Optional[bool] = None
+        self._pending_initial_start: bool = False  # unlock alleen bij eerste start na inpluggen
+
+    # ---------------- Post-start lock enforce ----------------
+    async def async_post_start(self):
+        """Na HA volledige start: slot geforceerd naar locked, ook als initieel states unknown waren."""
+        if not self._lock_entity:
+            return
+        try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if self._cable_entity:
+                    st_cable = self.hass.states.get(self._cable_entity)
+                    if self._is_known_state(st_cable):
+                        await self._ensure_lock_locked()
+                        _LOGGER.debug("Post-start: lock enforced (kabel=%s).", "aan" if st_cable.state == STATE_ON else "uit")
+                        return
+                await asyncio.sleep(1.0)
+            # Timeout: best effort toch locken
+            await self._ensure_lock_locked()
+            _LOGGER.debug("Post-start: lock enforced (timeout fallback).")
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _LOGGER.debug("Post-start lock enforce failed", exc_info=True)
 
     # ---------------- Unknown helpers ----------------
     @staticmethod
@@ -457,6 +481,23 @@ class EVLoadController:
         exp = str(WALLBOX_STATUS_CHARGING).strip().lower() if WALLBOX_STATUS_CHARGING is not None else "charging"
         return s == "charging" or s == exp
 
+    def _charging_detected_now(self) -> bool:
+        """Detecteer laden via status of vermogen."""
+        status_ok = self._is_status_charging()
+        power = self._get_charge_power_w()
+        return bool(status_ok or (power is not None and power > 100))
+
+    async def _wait_for_charging_detection(self, timeout_s: float = 5.0) -> bool:
+        """Wacht kort op start van laden; True indien gedetecteerd."""
+        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        while time.monotonic() < deadline:
+            if not self._is_cable_connected():
+                return False
+            if self._charging_detected_now():
+                return True
+            await asyncio.sleep(0.2)
+        return False
+
     def _schedule_relock_after_charging_start(self, already_detected: bool = False):
         self._cancel_relock_task()
 
@@ -466,23 +507,23 @@ class EVLoadController:
                     deadline = time.monotonic() + 120.0
                     while time.monotonic() < deadline:
                         if not self._is_cable_connected():
-                            _LOGGER.debug("Relock monitor aborted: cable disconnected")
+                            _LOGGER.debug("Relock monitor afgebroken: kabel uit")
                             return
                         status = self._get_wallbox_status()
                         power = self._get_charge_power_w()
                         if self._is_status_charging() or (power is not None and power > 100):
                             _LOGGER.debug(
-                                "Relock monitor: charging detected by %s (status=%s, power=%s)",
+                                "Relock monitor: laden gedetecteerd via %s (status=%s, power=%s)",
                                 "status" if self._is_status_charging() else "power", status, power
                             )
                             break
                         await asyncio.sleep(1)
                     else:
-                        _LOGGER.debug("Relock monitor timeout: no charging detected within 120s")
+                        _LOGGER.debug("Relock monitor timeout: geen laden binnen 120s")
                         return
                 await asyncio.sleep(RELOCK_AFTER_CHARGING_SECONDS)
                 await self._ensure_lock_locked()
-                _LOGGER.info("Auto re-lock executed %ss after charging started", RELOCK_AFTER_CHARGING_SECONDS)
+                _LOGGER.info("Auto re-lock %ss na start laden uitgevoerd", RELOCK_AFTER_CHARGING_SECONDS)
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -919,6 +960,7 @@ class EVLoadController:
 
     async def _on_cable_connected(self):
         self._reset_timers()
+        self._pending_initial_start = True  # eerste start na inpluggen
         await self._ensure_lock_locked()
 
         if self._current_setting_entity:
@@ -1008,6 +1050,7 @@ class EVLoadController:
         self._evaluate_missing_and_start_no_data_timer()
 
     async def _on_cable_disconnected(self):
+        self._pending_initial_start = False
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
         self._stop_resume_monitor()
@@ -1257,7 +1300,7 @@ class EVLoadController:
 
         if self._is_status_charging() or (charge_power is not None and charge_power > 100):
             if not self._relock_task:
-                _LOGGER.debug("Hysteresis: charging detected in-loop → scheduling relock watcher (direct)")
+                _LOGGER.debug("Hysteresis: charging detected → relock watcher")
                 self._schedule_relock_after_charging_start(already_detected=True)
 
         if not self._charging_active:
@@ -1394,7 +1437,7 @@ class EVLoadController:
         return False
 
     async def _pause_due_below_lower(self, duration: int):
-        _LOGGER.info("Pause: net < lower for >= %ds → handover", duration)
+        _LOGGER.info("Pause: net < lower voor >= %ds → handover", duration)
         self._below_lower_since = None
         self._cancel_below_lower_timer()
         self._charging_active = False
@@ -1411,7 +1454,7 @@ class EVLoadController:
             _LOGGER.error("Below-lower handover failed", exc_info=True)
 
     async def _pause_due_no_data(self, duration: int):
-        _LOGGER.info("Pause: missing data for >= %ds → handover", duration)
+        _LOGGER.info("Pause: missing data voor >= %ds → handover", duration)
         self._no_data_since = None
         self._cancel_no_data_timer()
         self._charging_active = False
@@ -1712,24 +1755,56 @@ class EVLoadController:
     async def _ensure_charging_enable_on(self):
         if not self._charging_enable_entity or not self.get_mode(MODE_START_STOP):
             return
-        if not self._is_lock_unlocked():
-            ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
-            if not ok:
-                _LOGGER.info("Enable ON skipped: lock could not be unlocked")
-                return
+
+        is_initial_start = self._pending_initial_start
+        did_unlock = False
+
         with contextlib.suppress(Exception):
             dom, _ = self._charging_enable_entity.split(".", 1)
             if dom != "switch":
                 return
+
             st = self.hass.states.get(self._charging_enable_entity)
-            if self._is_known_state(st) and st.state == STATE_ON:
-                if not self._relock_task:
-                    self._schedule_relock_after_charging_start()
-                return
-            if not self._is_known_state(st):
-                self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_on")
-            await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
-            self._schedule_relock_after_charging_start()
+
+            if self._lock_entity and not self._is_lock_unlocked() and self._is_cable_connected():
+                if is_initial_start:
+                    # Initial start: alleen bij kabel-in voor de eerste échte start
+                    if (self._essential_data_available() and self._planner_window_allows_start()
+                            and self._soc_allows_start() and self._priority_allowed_cache):
+                        ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
+                        if not ok:
+                            _LOGGER.info("Initial start: unlock mislukt, enable ON afgebroken")
+                            return
+                        did_unlock = True
+                        self._pending_initial_start = False
+                    else:
+                        # Voorwaarden nog niet ok → niets forceren; pend blijft True
+                        return
+                else:
+                    # Resume pad: eerst proberen met lock locked
+                    if not (self._is_known_state(st) and st.state == STATE_ON):
+                        await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
+                    # eerste poging gedaan → initial voorbij
+                    self._pending_initial_start = False
+
+                    if await self._wait_for_charging_detection(timeout_s=5.0):
+                        return
+                    # Fallback: toch unlocken om start af te dwingen
+                    ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
+                    if not ok:
+                        _LOGGER.info("Resume fallback unlock mislukt; start afgebroken")
+                        return
+                    did_unlock = True
+
+            # Zorg dat de switch ON staat (na mogelijke unlock)
+            st = self.hass.states.get(self._charging_enable_entity)
+            if not (self._is_known_state(st) and st.state == STATE_ON):
+                await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
+            # Na turn_on is initial fase sowieso voorbij
+            self._pending_initial_start = False
+
+            if did_unlock:
+                self._schedule_relock_after_charging_start()
 
     async def _enforce_start_stop_policy(self):
         if not self.get_mode(MODE_START_STOP):
@@ -1765,11 +1840,9 @@ class EVLoadController:
                         self.hass.async_create_task(async_align_current_with_order(self.hass))
                     if self.get_mode(MODE_MANUAL_AUTO):
                         async def _after_enable_manual():
-                            if (
-                                self._is_cable_connected() and self._essential_data_available()
-                                and self._planner_window_allows_start() and self._soc_allows_start()
-                                and self._priority_allowed_cache
-                            ):
+                            if (self._is_cable_connected() and self._essential_data_available()
+                                    and self._planner_window_allows_start() and self._soc_allows_start()
+                                    and self._priority_allowed_cache):
                                 await self._start_charging_and_reclaim()
                             else:
                                 await self._ensure_charging_enable_off()
