@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import voluptuous as vol
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Tuple
 import logging
 
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.core import callback, State
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.helpers.selector import selector
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
     DOMAIN,
@@ -120,7 +121,24 @@ def _validate_thresholds(data: dict, three_phase: bool) -> dict[str, str]:
     return errors
 
 
-def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
+# Keys we will filter/prefill by the selected device (wallbox-related)
+KEY_DOMAIN_MAP: Dict[str, str] = {
+    CONF_CHARGE_POWER: "sensor",
+    CONF_WALLBOX_STATUS: "sensor",
+    CONF_CABLE_CONNECTED: "binary_sensor",
+    CONF_CHARGING_ENABLE: "switch",
+    CONF_LOCK_SENSOR: "lock",
+    CONF_CURRENT_SETTING: "number",
+}
+FILTERABLE_KEYS = set(KEY_DOMAIN_MAP.keys())
+
+
+def _build_sensors_schema(
+    grid_single: bool,
+    defaults: dict,
+    selected_device: Optional[str] = None,
+    filter_keys: Optional[set[str]] = None,
+) -> vol.Schema:
     num_sel_w = {
         "number": {
             "min": MIN_THRESHOLD_VALUE,
@@ -132,7 +150,7 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     }
     num_sel_s = {
         "number": {
-            "min": SUSTAIN_MIN_SECONDS,  # min via constant
+            "min": SUSTAIN_MIN_SECONDS,
             "max": SUSTAIN_MAX_SECONDS,
             "step": 1,
             "mode": "box",
@@ -151,6 +169,7 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
 
     fields: dict = {}
 
+    # Grid sensors should NOT be filtered by wallbox device (they often live on the energy meter)
     if grid_single:
         fields[vol.Required(CONF_GRID_POWER, default=defaults.get(CONF_GRID_POWER, ""))] = selector(
             {"entity": {"domain": "sensor"}}
@@ -163,16 +182,21 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
             {"entity": {"domain": "sensor"}}
         )
 
-    def add_ent(key: str, domain: str):
-        fields[vol.Required(key, default=defaults.get(key, ""))] = selector({"entity": {"domain": domain}})
+    def add_ent(key: str, domain: str, filterable: bool = True):
+        ent_selector: Dict = {"entity": {"domain": domain}}
+        if selected_device and filterable and (filter_keys is None or key in filter_keys):
+            ent_selector["entity"]["device"] = selected_device
+        fields[vol.Required(key, default=defaults.get(key, ""))] = selector(ent_selector)
 
-    add_ent(CONF_CHARGE_POWER, "sensor")
-    add_ent(CONF_WALLBOX_STATUS, "sensor")
-    add_ent(CONF_CABLE_CONNECTED, "binary_sensor")
-    add_ent(CONF_CHARGING_ENABLE, "switch")
-    add_ent(CONF_LOCK_SENSOR, "lock")
-    add_ent(CONF_CURRENT_SETTING, "number")
+    # Wallbox-related (filtered if device selected)
+    add_ent(CONF_CHARGE_POWER, "sensor", filterable=True)
+    add_ent(CONF_WALLBOX_STATUS, "sensor", filterable=True)
+    add_ent(CONF_CABLE_CONNECTED, "binary_sensor", filterable=True)
+    add_ent(CONF_CHARGING_ENABLE, "switch", filterable=True)
+    add_ent(CONF_LOCK_SENSOR, "lock", filterable=True)
+    add_ent(CONF_CURRENT_SETTING, "number", filterable=True)
 
+    # EV SOC may be from a different integration/device → do NOT filter by selected device
     evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL, "")
     if evsoc_default:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL, default=evsoc_default)] = selector(
@@ -202,6 +226,278 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     fields[vol.Required(CONF_SUSTAIN_SECONDS, default=defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))] = selector(num_sel_s)
 
     return vol.Schema(fields)
+
+
+def _get_reg_entry(hass, entity_id: str):
+    try:
+        ent_reg = er.async_get(hass)
+        return ent_reg.async_get(entity_id)
+    except Exception:
+        return None
+
+
+def _get_registry_name(hass, entity_id: str) -> str:
+    try:
+        e = _get_reg_entry(hass, entity_id)
+        if e:
+            return (e.original_name or e.original_device_class or e.unique_id or e.entity_id) or entity_id
+    except Exception:
+        pass
+    return entity_id
+
+
+def _find_device_candidates(hass, device_id: str, domain: str) -> list[str]:
+    """Return entity_ids for a device filtered by domain, only enabled entries."""
+    if not device_id:
+        return []
+    ent_reg = er.async_get(hass)
+    out: list[str] = []
+    for entry in ent_reg.entities.values():
+        try:
+            if entry.device_id != device_id:
+                continue
+            # Skip disabled entities
+            if getattr(entry, "disabled_by", None) is not None:
+                continue
+            # Match domain (RegistryEntry may or may not have .domain across HA versions)
+            edomain = getattr(entry, "domain", None) or entry.entity_id.split(".", 1)[0]
+            if edomain != domain:
+                continue
+            out.append(entry.entity_id)
+        except Exception:
+            continue
+    return out
+
+
+def _prefer_by_keywords(hass, candidates: List[str], include_any: List[str], bonus_any: Optional[List[str]] = None,
+                        exclude_any: Optional[List[str]] = None) -> Tuple[List[str], Dict[str, int]]:
+    """Rank candidates by keyword occurrence in entity_id or registry name.
+    Return (best_ties, score_map)."""
+    if not candidates:
+        return [], {}
+    bonus_any = bonus_any or []
+    exclude_any = exclude_any or []
+    score_map: Dict[str, int] = {}
+    for eid in candidates:
+        name = f"{eid}|{_get_registry_name(hass, eid)}".lower()
+        score = 0
+        for kw in include_any:
+            if kw in name:
+                score += 3
+        for kw in bonus_any:
+            if kw in name:
+                score += 1
+        for kw in exclude_any:
+            if kw in name:
+                score -= 3
+        score_map[eid] = score
+    if not score_map:
+        return candidates, {}
+    max_score = max(score_map.values())
+    best = [eid for eid, sc in score_map.items() if sc == max_score]
+    return (best if max_score > 0 else candidates), score_map
+
+
+def _score_charge_power(hass, eid: str) -> int:
+    """Heuristic score for selecting the best 'charge power' sensor on a device."""
+    score = 0
+    st: Optional[State] = None
+    try:
+        st = hass.states.get(eid)
+    except Exception:
+        st = None
+
+    # Registry hints
+    reg = _get_reg_entry(hass, eid)
+    reg_dc = getattr(reg, "original_device_class", None) if reg else None
+
+    # Device class preference
+    dc = st.attributes.get("device_class") if st else None
+    if dc == "power" or reg_dc == "power":
+        score += 8
+
+    # Unit preference
+    unit = st.attributes.get("unit_of_measurement") if st else None
+    if unit in ("W", "kW"):
+        score += 6
+    if unit in ("kWh",):
+        score -= 6  # energy, not power
+
+    # State class: measurement vs totals
+    sclass = st.attributes.get("state_class") if st else None
+    if sclass == "measurement":
+        score += 4
+    if sclass and sclass.startswith("total"):
+        score -= 6
+
+    name = f"{eid}|{_get_registry_name(hass, eid)}".lower()
+
+    # Positive keywords
+    for kw, pts in [
+        ("charge_power", 8),
+        ("charging_power", 8),
+        ("charger_power", 6),
+        ("evse_power", 6),
+        ("ev_power", 5),
+        ("wallbox_power", 5),
+        ("power", 2),
+        ("charge", 2),
+        ("charging", 2),
+        ("ev", 1),
+        ("wallbox", 1),
+        ("charger", 1),
+    ]:
+        if kw in name:
+            score += pts
+
+    # Negative keywords (not the charger power)
+    for kw, pts in [
+        ("grid", -6),
+        ("import", -6),
+        ("export", -6),
+        ("solar", -6),
+        ("pv", -6),
+        ("home", -4),
+        ("house", -4),
+        ("total", -4),
+        ("sum", -4),
+        ("accumulated", -4),
+        ("energy", -6),
+        ("session_energy", -8),
+        ("l1", -3),
+        ("l2", -3),
+        ("l3", -3),
+        ("phase", -3),
+    ]:
+        if kw in name:
+            score += pts
+
+    return score
+
+
+def _select_single_charge_power(hass, candidates: List[str]) -> Optional[str]:
+    """Return a single best candidate for charge power, or None if ambiguous."""
+    if not candidates:
+        return None
+    scored = [(eid, _score_charge_power(hass, eid)) for eid in candidates]
+    # Find unique highest
+    scored.sort(key=lambda x: x[1], reverse=True)
+    if not scored:
+        return None
+    top_eid, top_score = scored[0]
+    # If multiple share top score, ambiguous
+    ties = [eid for eid, sc in scored if sc == top_score]
+    if top_score <= 0:
+        return None
+    if len(ties) == 1:
+        return top_eid
+    return None
+
+
+def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[str]:
+    """Refine candidates using state attributes and keyword heuristics per key."""
+    if not candidates:
+        return []
+    refined = list(candidates)
+
+    if key == CONF_CHARGE_POWER:
+        # If we can pick a unique best, return it directly
+        pick = _select_single_charge_power(hass, refined)
+        if pick:
+            return [pick]
+
+        # Otherwise narrow down:
+        # 1) Prefer sensors with device_class power or unit W/kW
+        power_like = []
+        for eid in refined:
+            st = hass.states.get(eid)
+            if not st:
+                continue
+            unit = st.attributes.get("unit_of_measurement")
+            dc = st.attributes.get("device_class")
+            if (dc == "power") or (unit in ("W", "kW")):
+                power_like.append(eid)
+        if len(power_like) == 1:
+            return power_like
+        if len(power_like) > 1:
+            refined = power_like
+
+        # 2) Avoid totals/energy
+        measurement_like = []
+        for eid in refined:
+            st = hass.states.get(eid)
+            if not st:
+                continue
+            sclass = st.attributes.get("state_class")
+            unit = st.attributes.get("unit_of_measurement")
+            if sclass == "measurement" and unit in ("W", "kW"):
+                measurement_like.append(eid)
+        if len(measurement_like) == 1:
+            return measurement_like
+        if len(measurement_like) > 1:
+            refined = measurement_like
+
+        # 3) Prefer keywords; penalize grid/solar/pv/etc.
+        refined, _ = _prefer_by_keywords(
+            hass,
+            refined,
+            include_any=["charge_power", "charging_power", "charger_power", "evse_power", "ev_power", "wallbox_power", "power"],
+            bonus_any=["charge", "charging", "ev", "wallbox", "charger"],
+            exclude_any=["grid", "import", "export", "solar", "pv", "home", "house", "total", "sum", "accumulated", "energy", "session_energy", "l1", "l2", "l3", "phase"],
+        )
+        return refined
+
+    if key == CONF_WALLBOX_STATUS:
+        # Prefer enum-like sensors (device_class enum) if available
+        enum_like = []
+        for eid in refined:
+            st = hass.states.get(eid)
+            if not st:
+                continue
+            if st.attributes.get("device_class") in ("enum", "timestamp"):
+                enum_like.append(eid)
+        if len(enum_like) == 1:
+            return enum_like
+        if len(enum_like) > 1:
+            refined = enum_like
+        # Keyword preference: 'status', 'charging_status', 'state'
+        refined, _ = _prefer_by_keywords(
+            hass,
+            refined,
+            include_any=["status", "charging_status", "ev_status", "wallbox_status", "state"],
+            bonus_any=["charge", "charging", "ev", "wallbox"],
+        )
+        only_status = [eid for eid in refined if "status" in (eid.lower() + "|" + _get_registry_name(hass, eid).lower())]
+        if len(only_status) == 1:
+            return only_status
+        return refined
+
+    # Other keys: leave as-is
+    return refined
+
+
+def _autofill_from_device(hass, defaults: dict, device_id: Optional[str]) -> None:
+    """Prefill defaults for filterable keys when a single best candidate is found on the selected device."""
+    if not device_id:
+        return
+    for key, domain in KEY_DOMAIN_MAP.items():
+        # Do not override if already provided/non-empty
+        if defaults.get(key):
+            continue
+        candidates = _find_device_candidates(hass, device_id, domain)
+        if not candidates:
+            continue
+        # Refine based on heuristics
+        refined = _refine_candidates_for_key(hass, candidates, key)
+        # If refinement yields a single candidate, use it
+        if len(refined) == 1:
+            defaults[key] = refined[0]
+            _LOGGER.debug("Auto-filled %s with %s (from %d candidates)", key, refined[0], len(candidates))
+        else:
+            _LOGGER.debug(
+                "Did not auto-fill %s: %d candidates on device, %d after refine (ambiguous)",
+                key, len(candidates), len(refined)
+            )
 
 
 class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -274,13 +570,27 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._s_defaults is None:
             self._s_defaults = {}
 
+        # Before showing the form: apply auto-prefill from selected device (only once or when empty values)
+        if user_input is None and self._selected_device:
+            _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
+
         if user_input is None:
-            schema = _build_sensors_schema(grid_single, self._s_defaults)
-            return self.async_show_form(
-                step_id="sensors",
-                data_schema=schema,
-                description_placeholders={"name": self._step1.get(CONF_NAME, "")},
-            )
+            # Build schema with filtering; fallback to unfiltered if HA version doesn't support device filter
+            try:
+                schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+                return self.async_show_form(
+                    step_id="sensors",
+                    data_schema=schema,
+                    description_placeholders={"name": self._step1.get(CONF_NAME, "")},
+                )
+            except Exception as exc:
+                _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
+                schema = _build_sensors_schema(grid_single, self._s_defaults, None, FILTERABLE_KEYS)
+                return self.async_show_form(
+                    step_id="sensors",
+                    data_schema=schema,
+                    description_placeholders={"name": self._step1.get(CONF_NAME, "")},
+                )
 
         for k, v in (user_input or {}).items():
             self._s_defaults[k] = v
@@ -319,7 +629,15 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
         if errors:
-            schema = _build_sensors_schema(grid_single, self._s_defaults)
+            # Re-apply auto-prefill for any still-empty fields (if device selected)
+            if self._selected_device:
+                _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
+            # Try filtered schema first, then fallback
+            try:
+                schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+            except Exception as exc:
+                _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
+                schema = _build_sensors_schema(grid_single, self._s_defaults, None, FILTERABLE_KEYS)
             return self.async_show_form(
                 step_id="sensors",
                 data_schema=schema,
@@ -435,10 +753,20 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
                 CONF_SUSTAIN_SECONDS: eff.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS),
             }
 
+        # Before showing the form: apply auto-prefill from selected device for empty fields
+        if user_input is None and self._selected_device:
+            _autofill_from_device(self.hass, self._values, self._selected_device)
+
         if user_input is None:
-            schema = _build_sensors_schema(grid_single, self._values)
-            name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
-            return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
+            try:
+                schema = _build_sensors_schema(grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+                name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
+                return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
+            except Exception as exc:
+                _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
+                schema = _build_sensors_schema(grid_single, self._values, None, FILTERABLE_KEYS)
+                name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
+                return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
 
         for k, v in (user_input or {}).items():
             self._values[k] = v
@@ -477,7 +805,14 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
         if errors:
-            schema = _build_sensors_schema(grid_single, self._values)
+            # Re-apply auto-prefill for any still-empty fields (if device selected)
+            if self._selected_device:
+                _autofill_from_device(self.hass, self._values, self._selected_device)
+            try:
+                schema = _build_sensors_schema(grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+            except Exception as exc:
+                _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
+                schema = _build_sensors_schema(grid_single, self._values, None, FILTERABLE_KEYS)
             name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
             return self.async_show_form(step_id="sensors", data_schema=schema, errors=errors, description_placeholders={"name": name})
 
