@@ -20,10 +20,20 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install hassfest
+      - name: Disable git credential helpers (prevent interactive prompts)
+        run: |
+          # Unset any configured credential helper(s) that might prompt
+          git config --global --unset-all credential.helper || true
+          git config --global credential.helper '' || true
+          # Prevent askpass from being used interactively
+          git config --global core.askPass /bin/true || true
+
+      - name: Install hassfest from GitHub (non-interactive)
+        env:
+          GIT_TERMINAL_PROMPT: 0
         run: |
           python -m pip install --upgrade pip
-          pip install hassfest
+          python -m pip install --upgrade "git+https://github.com/home-assistant/hassfest.git@main"
 
       - name: Run hassfest
         run: |
