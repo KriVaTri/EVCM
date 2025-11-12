@@ -1,7 +1,7 @@
 {
   "domain": "evcm",
   "name": "EVCM",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "documentation": "https://example.org",
   "issue_tracker": "https://example.org/issues",
   "codeowners": ["@KriVaTri"],
