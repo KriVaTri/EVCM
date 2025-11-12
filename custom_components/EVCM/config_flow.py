@@ -24,7 +24,6 @@ from .const import (
     CONF_CURRENT_SETTING,
     # Legacy compat flag
     CONF_WALLBOX_THREE_PHASE,
-    DEFAULT_WALLBOX_THREE_PHASE,
     # Supply profile
     CONF_SUPPLY_PROFILE,
     SUPPLY_PROFILES,
@@ -46,6 +45,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     CONF_SUSTAIN_SECONDS,
     DEFAULT_SUSTAIN_SECONDS,
+    SUSTAIN_MIN_SECONDS,
     SUSTAIN_MAX_SECONDS,
     # Device + optional
     CONF_DEVICE_ID,
@@ -132,7 +132,7 @@ def _build_sensors_schema(grid_single: bool, defaults: dict) -> vol.Schema:
     }
     num_sel_s = {
         "number": {
-            "min": 0,
+            "min": SUSTAIN_MIN_SECONDS,   # min via constant
             "max": SUSTAIN_MAX_SECONDS,
             "step": 1,
             "mode": "box",
@@ -302,10 +302,10 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Sustain
+        # Sustain (min via constant)
         try:
             st = int(self._s_defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
-            if st < 0 or st > SUSTAIN_MAX_SECONDS:
+            if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
                 raise ValueError
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
@@ -460,10 +460,10 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Validate sustain
+        # Validate sustain (min via constant)
         try:
             st = int(self._values.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
-            if st < 0 or st > SUSTAIN_MAX_SECONDS:
+            if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
                 raise ValueError
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
