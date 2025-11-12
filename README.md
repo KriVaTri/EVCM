@@ -231,7 +231,7 @@ Design guarantee:
 ## 7) Priority order numbering
 
 For each entry EVCM provides a Number entity:
-- Name: “<Entry Name> priority order”
+- Name: “{Entry Name} priority order”
 - Type: box input, 1‑based integer
 - Changing this value moves the entry within the global order
 - All Priority Order numbers update immediately (no duplicate numbers)
@@ -285,7 +285,7 @@ Regulation logic:
 
 ## 10) SoC limit
 
-Number entity: “<Entry Name> SoC limit” (0–100 %, integer, unit “%”).
+Number entity: “{Entry Name} SoC limit” (0–100 %, integer, unit “%”).
 
 - When an SoC sensor is configured and the SoC is ≥ limit, charging is paused and (if Priority Charging is ON and this entry is current) EVCM advances to the next by order.
 - If there is no SoC sensor or the limit is unset, SoC gating is effectively disabled.
@@ -305,8 +305,8 @@ You have two simple ways to effectively disable SoC-based pausing without changi
 ## 11) Planner window (start/stop datetimes)
 
 DateTime entities:
-- “<Entry Name> planner start”
-- “<Entry Name> planner stop”
+- “{Entry Name} planner start”
+- “{Entry Name} planner stop”
 
 When Charge Planner is ON:
 - If the window is invalid (missing or start ≥ stop), charging is not allowed to start.
@@ -357,18 +357,18 @@ You can observe these in Developer Tools → Events.
 Per entry:
 
 - Switches
-  - `<Name> Priority Charging` (global proxy)
-  - `<Name> ECO`
-  - `<Name> Start/Stop`
-  - `<Name> Manual`
-  - `<Name> Charge Planner`
-  - `<Name> Start/Stop Reset`
+  - `{Name} Priority Charging` (global proxy)
+  - `{Name} ECO`
+  - `{Name} Start/Stop`
+  - `{Name} Manual`
+  - `{Name} Charge Planner`
+  - `{Name} Start/Stop Reset`
 - Numbers
-  - `<Name> priority order` (integer, 1‑based)
-  - `<Name> SoC limit` (integer, unit “%”)
+  - `{Name} priority order` (integer, 1‑based)
+  - `{Name} SoC limit` (integer, unit “%”)
 - DateTime
-  - `<Name> planner start`
-  - `<Name> planner stop`
+  - `{Name} planner start`
+  - `{Name} planner stop`
 
 You will also configure references to:
 - Net power sensor(s) (single or export/import)
