@@ -39,7 +39,8 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [15. Entities overview](#15-entities-overview)  
 - [16. Unknown/unavailable detection](#16-unknownunavailable-detection)  
 - [17. Common scenarios](#17-common-scenarios)  
-- [18. Troubleshooting](#18-troubleshooting)  
+- [18. Use Case Example](#18-use-case-example)
+- [19. Troubleshooting](#19-troubleshooting)
 
 ---
 
@@ -431,7 +432,26 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 18) Troubleshooting
+## 18) Use Case Example
+
+Use Case Example with ECO mode ON:
+
+When the upper threshold is set to 4000W, charging will start when grid export is 4000W or above.
+If the power supply profile is set to 3-phase 400V (minimum charging power = 4150W), grid export will decrease by approximately 4150W (when charging @ 6A), resulting in 150W of grid consumption.
+The regulation loop will then wait for the conditions to either increase or decrease the charging current:
+For 3-phase 400V, the charging power must rise by +700W above the net target to increase by 1A, or drop by -200W below the net target to decrease by 1A.
+These conditions will be checked at every scan interval.
+
+If grid consumption exceeds the lower threshold (maximum allowed consumption) for the duration specified in the "sustain time" setting, charging will pause.
+Charging will only resume once the upper threshold is reached for the duration specified in the "debounce upper" setting.
+
+The "sustain" and "debounce upper" timers are designed to account for fluctuations, such as cloud cover (e.g., in solar energy systems), and to prevent the charging process from toggling too frequently.
+
+When ECO mode is turned off, the "ECO off" upper and lower thresholds will be used, while the "ECO on" thresholds will be ignored (and vice versa).
+
+---
+
+## 19) Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
