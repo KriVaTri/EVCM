@@ -95,9 +95,9 @@ REPORT_UNKNOWN_TRANSITION_NEW = True
 REPORT_UNKNOWN_TRANSITION_OLD = False
 UNKNOWN_STARTUP_GRACE_SECONDS = 90.0
 
-RELOCK_AFTER_CHARGING_SECONDS = 30  # automatische re-lock na laden start
+RELOCK_AFTER_CHARGING_SECONDS = 30
 
-# Debounce-optie
+# Debounce option
 OPT_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
 DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
 UPPER_DEBOUNCE_MIN_SECONDS = 0
@@ -223,12 +223,15 @@ class EVLoadController:
         # Trackers
         self._last_soc_allows: Optional[bool] = None
         self._last_missing_nonempty: Optional[bool] = None
-        self._pending_initial_start: bool = False  # unlock alleen bij eerste start na inpluggen
+        self._pending_initial_start: bool = False
 
         # Debounce boven upper
         self._above_upper_since_ts: Optional[float] = None
         self._above_upper_ref: Optional[float] = None
-        self._upper_timer_task: Optional[asyncio.Task] = None  # éénmalige timer voor debounce
+        self._upper_timer_task: Optional[asyncio.Task] = None
+
+        # Auto-unlock toggle
+        self._auto_unlock_enabled: bool = True
 
     # ---------------- Opties: debounce ----------------
     def _upper_debounce_seconds(self) -> int:
@@ -395,6 +398,7 @@ class EVLoadController:
                 "start_stop_enabled": True,
                 "manual_enabled": False,
                 "net_power_target_w": int(target_opt) if isinstance(target_opt, (int, float)) else DEFAULT_NET_POWER_TARGET_W,
+                "auto_unlock_enabled": True,
             }
             await self._state_store.async_save(self._state)
         else:
@@ -416,6 +420,12 @@ class EVLoadController:
         except Exception:
             self._net_power_target_w = DEFAULT_NET_POWER_TARGET_W
 
+        # Auto unlock persisted flag
+        try:
+            self._auto_unlock_enabled = bool(self._state.get("auto_unlock_enabled", True))
+        except Exception:
+            self._auto_unlock_enabled = True
+
         self._state_loaded = True
 
     async def _save_unified_state(self):
@@ -430,6 +440,7 @@ class EVLoadController:
             "start_stop_enabled": self.get_mode(MODE_START_STOP),
             "manual_enabled": self.get_mode(MODE_MANUAL_AUTO),
             "net_power_target_w": self._net_power_target_w,
+            "auto_unlock_enabled": bool(self._auto_unlock_enabled),
         }
         with contextlib.suppress(Exception):
             await self._state_store.async_save(to_save)
@@ -517,6 +528,19 @@ class EVLoadController:
         except Exception:
             v = 16
         return max(MIN_CURRENT_A, min(32, v))
+
+    # ---------------- Auto unlock flag ----------------
+    def get_auto_unlock_enabled(self) -> bool:
+        return bool(self._auto_unlock_enabled)
+
+    def set_auto_unlock_enabled(self, enabled: bool) -> None:
+        prev = self._auto_unlock_enabled
+        self._auto_unlock_enabled = bool(enabled)
+        if prev != self._auto_unlock_enabled:
+            _LOGGER.debug("Auto unlock toggle → %s", self._auto_unlock_enabled)
+            self.hass.async_create_task(self._save_unified_state())
+            # Reuse mode listeners to refresh UI switches
+            self._notify_mode_listeners()
 
     # ---------------- Lock helpers ----------------
     def _is_lock_unlocked(self) -> bool:
@@ -1064,7 +1088,7 @@ class EVLoadController:
 
     async def _on_cable_connected(self):
         self._reset_timers()
-        self._pending_initial_start = True  # eerste start na inpluggen
+        self._pending_initial_start = True
         await self._ensure_lock_locked()
 
         if self._current_setting_entity:
@@ -1121,7 +1145,6 @@ class EVLoadController:
             if self.get_mode(MODE_START_STOP):
                 if (self._priority_allowed_cache and self._essential_data_available()
                     and self._planner_window_allows_start() and self._soc_allows_start()):
-                    # Manual: start meteen, zonder upper/eco gating
                     if (not self._priority_mode_enabled) or (await self._have_priority_now()):
                         await self._start_charging_and_reclaim()
                 else:
@@ -1176,7 +1199,6 @@ class EVLoadController:
                         blocking=True
                     )
 
-        # Start/Stop volgt Start/Stop Reset bij loskoppelen
         try:
             desired = self.get_mode(MODE_STARTSTOP_RESET)
             if self.get_mode(MODE_START_STOP) != desired:
@@ -1209,7 +1231,6 @@ class EVLoadController:
                     await asyncio.sleep(self._scan_interval)
                     continue
 
-                # Alleen terugnemen bij sustained boven onze eigen upper
                 if self._planner_window_allows_start() and self._soc_allows_start() and self._sustained_above_upper(net):
                     if self._priority_mode_enabled:
                         with contextlib.suppress(Exception):
@@ -1354,7 +1375,6 @@ class EVLoadController:
             return
 
         if self.get_mode(MODE_MANUAL_AUTO):
-            # Manual mode: ignore eco/upper thresholds for starting
             self._reset_timers()
             self._stop_regulation_loop()
             self._stop_resume_monitor()
@@ -1450,7 +1470,6 @@ class EVLoadController:
                 self._stop_resume_monitor()
                 self._start_regulation_loop_if_needed()
             else:
-                # Plan directe timer voor resterende debounce
                 if net is not None and net >= upper:
                     now = time.monotonic()
                     elapsed = 0.0 if self._above_upper_since_ts is None else (now - self._above_upper_since_ts)
@@ -1920,7 +1939,9 @@ class EVLoadController:
 
             if self._lock_entity and not self._is_lock_unlocked() and self._is_cable_connected():
                 if is_initial_start:
-                    # Initial start: alleen bij kabel-in voor de eerste échte start
+                    if not self._auto_unlock_enabled:
+                        _LOGGER.debug("Initial start: Auto unlock is OFF → no unlock attempt")
+                        return
                     if (self._essential_data_available() and self._planner_window_allows_start()
                             and self._soc_allows_start() and self._priority_allowed_cache):
                         ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
@@ -1930,29 +1951,26 @@ class EVLoadController:
                         did_unlock = True
                         self._pending_initial_start = False
                     else:
-                        # Voorwaarden nog niet ok → niets forceren; pend blijft True
                         return
                 else:
-                    # Resume pad: eerst proberen met lock locked
                     if not (self._is_known_state(st) and st.state == STATE_ON):
                         await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
-                    # eerste poging gedaan → initial voorbij
                     self._pending_initial_start = False
 
                     if await self._wait_for_charging_detection(timeout_s=5.0):
                         return
-                    # Fallback: toch unlocken om start af te dwingen
+                    if not self._auto_unlock_enabled:
+                        _LOGGER.debug("Resume: Auto unlock is OFF → no unlock fallback")
+                        return
                     ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
                     if not ok:
                         _LOGGER.info("Resume fallback unlock mislukt; start afgebroken")
                         return
                     did_unlock = True
 
-            # Zorg dat de switch ON staat (na mogelijke unlock)
             st = self.hass.states.get(self._charging_enable_entity)
             if not (self._is_known_state(st) and st.state == STATE_ON):
                 await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
-            # Na turn_on is initial fase sowieso voorbij
             self._pending_initial_start = False
 
             if did_unlock:
