@@ -10,7 +10,7 @@ EVCM is a Home Assistant custom integration to intelligently control one or more
 - Priority order across multiple charging points
 - Automatic pausing on insufficient surplus or missing data
 - Dynamic current regulation (Amps up/down) driven by export/import
-- One-phase vs three-phase specific behavior
+- One-phase vs three-phase specific behavior (use of supply profiles)
 - Upper start debounce (start delay on the upper threshold)
 - Auto unlock switch (allow/prevent automatic unlocking before starting charge)
 
