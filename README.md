@@ -12,6 +12,7 @@ EVCM is a Home Assistant custom integration to intelligently control one or more
 - Dynamic current regulation (Amps up/down) driven by export/import
 - One-phase vs three-phase specific behavior
 - Upper start debounce (start delay on the upper threshold)
+- Auto unlock switch (allow/prevent automatic unlocking before starting charge)
 
 This document explains how EVCM works, how to configure it, and which entities it provides.
 
@@ -44,7 +45,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 ## 1) Concepts and terminology
 
-- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/import sensors are used.
+- Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/impor[...]
 - ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
 - ECO OFF thresholds: an alternate band used when ECO mode is OFF.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
@@ -57,6 +58,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - Planner window: local datetimes (start/stop) defining when charging is allowed if planner mode is enabled.
 - SoC limit: maximum EV battery % at which charging should pause.
 - Upper start debounce: seconds that net power must stay at/above the upper threshold before (re)starting.
+- Auto unlock: per-entry switch to allow or prevent automatic unlocking of the wallbox lock to start charging.
 
 ---
 
@@ -74,6 +76,7 @@ This document explains how EVCM works, how to configure it, and which entities i
   - Planner start/stop (DateTime entities)
 - No unintended reordering: setting current priority never mutates the global order.
 - Upper start debounce for clean starts on the upper threshold.
+- Auto unlock (switch): ON = default behaviour (auto-unlock when all start conditions are met); OFF = user must manually unlock before charging can start. Automatic re-locking remains unchanged.
 
 ---
 
@@ -200,10 +203,14 @@ EVCM creates a set of switches per configured entry:
 - Charge Planner
 - Start/Stop
 - Start/Stop Reset
+- Auto unlock
 
 Notes:
 - Priority Charging is a global flag; each entry exposes a proxy switch that reads/writes the same global value and stays in sync via events.
-- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state.
+- Auto unlock controls if EVCM is allowed to automatically unlock the wallbox lock to start charging:
+  - ON: default behaviour (unchanged from previous versions). When all start conditions are met (thresholds/planner/SoC/priority/data), EVCM may unlock and start charging. Automatic re‑lock after charging start remains active.
+  - OFF: EVCM will not unlock automatically. The user must manually unlock before charging can start. All other logic (including automatic re‑lock on cable removal etc.) remains unchanged.
+- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state[...]
 
 ---
 
@@ -241,7 +248,7 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO ON vs OFF)
+## 8) Hysteresis thresholds (ECO vs OFF)
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta depending on supply voltage / phase profile)
@@ -363,6 +370,7 @@ Per entry:
   - `{Name} Manual`
   - `{Name} Charge Planner`
   - `{Name} Start/Stop Reset`
+  - `{Name} Auto unlock`
 - Numbers
   - `{Name} priority order` (integer, 1‑based)
   - `{Name} SoC limit` (integer, unit “%”)
@@ -418,6 +426,9 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 6. Restart of integration or cable disconnect  
    Start/Stop is synchronized to the persisted Start/Stop Reset state (only the user can change the Reset switch).
 
+7. Auto unlock OFF and cable just connected  
+   Conditions may allow charging to start, but EVCM will not unlock the lock automatically. Manually unlock the lock to allow charging to start. Automatic re‑lock behavior (after charging starts or on cable removal) remains unchanged.
+
 ---
 
 ## 18) Troubleshooting
@@ -429,6 +440,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 | Charging never starts | Below upper threshold / invalid planner / missing data / priority gating | Check thresholds, planner window, sensor availability, and Priority Charging state |
 | SoC limit ignored | No SoC sensor configured or limit unset | Configure EV SoC sensor and set a limit |
 | Pauses too quickly | Sustain = 0 | Increase `sustain_seconds` |
+| Charging doesn’t start with a locked cable | Auto unlock is OFF | Manually unlock the wallbox lock or turn Auto unlock ON |
 
 Enable debug logs for `custom_components.evcm` if you need deeper insight.
 
