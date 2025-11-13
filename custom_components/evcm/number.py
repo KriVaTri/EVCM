@@ -53,6 +53,7 @@ class _SocLimitNumber(NumberEntity):
     _attr_mode = NumberMode.BOX
     _attr_native_unit_of_measurement = "%"
     _attr_suggested_display_precision = 0
+    _attr_icon = "mdi:battery-medium"
 
     def __init__(self, controller: EVLoadController, entry_id: str, friendly_name: str, object_id: str) -> None:
         self._controller = controller
@@ -89,6 +90,7 @@ class _PriorityOrderNumber(NumberEntity):
     _attr_native_step = 1
     _attr_mode = NumberMode.BOX
     _attr_suggested_display_precision = 0
+    _attr_icon = "mdi:numeric"
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, friendly_name: str, object_id: str) -> None:
         self.hass = hass
@@ -158,6 +160,7 @@ class _NetPowerTargetNumber(NumberEntity):
     _attr_native_max_value = NET_POWER_TARGET_MAX_W
     _attr_native_unit_of_measurement = "W"
     _attr_suggested_display_precision = 0
+    _attr_icon = "mdi:flash"
 
     def __init__(self, controller: EVLoadController, entry_id: str, friendly_name: str, object_id: str) -> None:
         self._controller = controller
