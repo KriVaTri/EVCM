@@ -59,7 +59,6 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# New debounce option (kept local for compat; not in const.py)
 CONF_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
 DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
 UPPER_DEBOUNCE_MIN_SECONDS = 0
