@@ -4,12 +4,12 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Callable, Dict, List, Tuple
 
 from homeassistant.core import HomeAssistant, callback, Event
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_track_state_change_event, async_track_point_in_time
 from homeassistant.const import STATE_ON, STATE_OFF
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.storage import Store
@@ -61,6 +61,7 @@ from .const import (
     SUPPLY_PROFILE_REG_THRESHOLDS,
     CONF_NET_POWER_TARGET_W,
     DEFAULT_NET_POWER_TARGET_W,
+    PLANNER_DATETIME_UPDATED_EVENT,
 )
 
 from .priority import (
@@ -97,7 +98,6 @@ UNKNOWN_STARTUP_GRACE_SECONDS = 90.0
 
 RELOCK_AFTER_CHARGING_SECONDS = 30
 
-# Debounce option
 OPT_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
 DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
 UPPER_DEBOUNCE_MIN_SECONDS = 0
@@ -109,25 +109,6 @@ def _effective_config(entry: ConfigEntry) -> dict:
 
 
 class EVLoadController:
-    """
-    Priority gedrag:
-    - Bij below-lower pauze blijft de huidige entry de prioriteit behouden.
-    - Prioriteit wordt uitsluitend gewijzigd via de bestaande knoppen (geen auto-yield).
-    - Reclaim-monitor pakt de beurt terug zodra sustained boven upper van deze entry.
-
-    Debounce gedrag:
-    - Bij net ≥ upper wordt een eenmalige timer ingepland voor de resterende debounce-tijd,
-      zodat start exact na de debounce gebeurt (zonder extra scan-intervallatentie).
-
-    Manual mode:
-    - Negeert de upper/eco drempel voor starten. Als Start/Stop aan staat en overige gating (planner/SoC/priority) toelaat,
-      wordt laden meteen aangezet.
-
-    Start/Stop volgt Start/Stop Reset:
-    - Bij integratie-herstart (initialize) en bij kabel loskoppelen wordt de Start/Stop stand gelijkgezet aan Start/Stop Reset.
-      Alleen de gebruiker kan Start/Stop Reset wijzigen.
-    """
-
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
@@ -145,13 +126,11 @@ class EVLoadController:
         }
         self._mode_listeners: List[Callable[[], None]] = []
 
-        # Planner & SoC
         self._planner_start_dt: Optional[datetime] = None
         self._planner_stop_dt: Optional[datetime] = None
         self._soc_limit_percent: Optional[int] = None
 
         eff = _effective_config(self.entry)
-        # Entities
         self._cable_entity: Optional[str] = eff.get(CONF_CABLE_CONNECTED)
         self._charging_enable_entity: Optional[str] = eff.get(CONF_CHARGING_ENABLE)
         self._current_setting_entity: Optional[str] = eff.get(CONF_CURRENT_SETTING)
@@ -160,13 +139,11 @@ class EVLoadController:
         self._charge_power_entity: Optional[str] = eff.get(CONF_CHARGE_POWER)
         self._ev_soc_entity: Optional[str] = eff.get(CONF_EV_BATTERY_LEVEL) or None
 
-        # Grid
         self._grid_single: bool = bool(eff.get(CONF_GRID_SINGLE, False))
         self._grid_power_entity: Optional[str] = eff.get(CONF_GRID_POWER)
         self._grid_export_entity: Optional[str] = eff.get(CONF_GRID_EXPORT)
         self._grid_import_entity: Optional[str] = eff.get(CONF_GRID_IMPORT)
 
-        # Supply profile
         profile_key = eff.get(CONF_SUPPLY_PROFILE)
         if profile_key == "na_1ph_240":
             _LOGGER.info("Supply profile 'na_1ph_240' migrated to 'eu_1ph_230'.")
@@ -182,20 +159,17 @@ class EVLoadController:
         self._profile_reg_min_w: int = int(profile_meta.get("regulation_min_w", 1300 if self._supply_phases == 1 else 4000))
         self._wallbox_three_phase: bool = bool(self._supply_phases == 3)
 
-        # Hysteresis thresholds
         self._eco_on_upper: float = float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
         self._eco_on_lower: float = float(eff.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))
         self._eco_off_upper: float = float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
         self._eco_off_lower: float = float(eff.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))
 
-        # Scan & sustain & planner
         self._scan_interval: int = int(eff.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
         self._planner_start_dt = self._parse_dt_option(eff.get(CONF_PLANNER_START_ISO))
         self._planner_stop_dt = self._parse_dt_option(eff.get(CONF_PLANNER_STOP_ISO))
         self._soc_limit_percent = self._parse_soc_option(eff.get(CONF_SOC_LIMIT_PERCENT))
         self._net_power_target_w: int = int(eff.get(CONF_NET_POWER_TARGET_W, DEFAULT_NET_POWER_TARGET_W))
 
-        # Runtime flags / tasks
         self._last_cable_connected: Optional[bool] = None
         self._auto_connect_task: Optional[asyncio.Task] = None
         self._regulation_task: Optional[asyncio.Task] = None
@@ -206,34 +180,29 @@ class EVLoadController:
 
         self._charging_active: bool = False
 
-        # Timers (state markers)
         self._below_lower_since: Optional[float] = None
         self._below_lower_task: Optional[asyncio.Task] = None
         self._no_data_since: Optional[float] = None
         self._no_data_task: Optional[asyncio.Task] = None
 
-        # Priority
         self._priority_allowed_cache: bool = True
         self._priority_mode_enabled: bool = False
 
-        # Unknown handling
         self._unknown_last_emit: Dict[Tuple[str, str], float] = {}
         self._init_monotonic: float = time.monotonic()
 
-        # Trackers
         self._last_soc_allows: Optional[bool] = None
         self._last_missing_nonempty: Optional[bool] = None
         self._pending_initial_start: bool = False
 
-        # Debounce boven upper
         self._above_upper_since_ts: Optional[float] = None
         self._above_upper_ref: Optional[float] = None
         self._upper_timer_task: Optional[asyncio.Task] = None
 
-        # Auto-unlock toggle
         self._auto_unlock_enabled: bool = True
+        self._midnight_unsub: Optional[Callable[[], None]] = None
 
-    # ---------------- Opties: debounce ----------------
+    # --- Upper debounce helpers ------------------------------------------------
     def _upper_debounce_seconds(self) -> int:
         eff = _effective_config(self.entry)
         try:
@@ -254,7 +223,6 @@ class EVLoadController:
         self._cancel_upper_timer()
 
     def _sustained_above_upper(self, net: Optional[float]) -> bool:
-        """True als net ≥ current upper gedurende upper_debounce_seconds."""
         if net is None:
             self._reset_above_upper()
             return False
@@ -267,17 +235,15 @@ class EVLoadController:
                 self._above_upper_since_ts = now
                 return debounce == 0
             return (now - (self._above_upper_since_ts or now)) >= debounce
-        # onder upper → reset
         self._reset_above_upper()
         return False
 
     def _schedule_upper_timer(self, remaining_s: float):
-        """Plan een eenmalige evaluatie net na de resterende debounce-tijd."""
         self._cancel_upper_timer()
 
         async def _runner():
             try:
-                await asyncio.sleep(max(0.0, float(remaining_s)))
+                await asyncio.sleep(max(0.0, remaining_s))
                 if (
                     not self.get_mode(MODE_MANUAL_AUTO)
                     and self.get_mode(MODE_START_STOP)
@@ -303,28 +269,91 @@ class EVLoadController:
 
         self._upper_timer_task = self.hass.async_create_task(_runner())
 
-    # ---------------- Post-start lock enforce ----------------
+    # --- Post start ------------------------------------------------------------
     async def async_post_start(self):
         if not self._lock_entity:
+            self._schedule_midnight_rollover()
             return
         try:
-            deadline = time.monotonic() + 30.0
+            deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 if self._cable_entity:
                     st_cable = self.hass.states.get(self._cable_entity)
                     if self._is_known_state(st_cable):
                         await self._ensure_lock_locked()
-                        _LOGGER.debug("Post-start: lock enforced (kabel=%s).", "aan" if st_cable.state == STATE_ON else "uit")
+                        _LOGGER.debug("Post-start: lock enforced (cable=%s)", "on" if st_cable.state == STATE_ON else "off")
+                        self._schedule_midnight_rollover()
                         return
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1)
             await self._ensure_lock_locked()
             _LOGGER.debug("Post-start: lock enforced (timeout fallback).")
         except asyncio.CancelledError:
             return
         except Exception:
             _LOGGER.debug("Post-start lock enforce failed", exc_info=True)
+        finally:
+            self._schedule_midnight_rollover()
 
-    # ---------------- Unknown helpers ----------------
+    # --- Planner date rollover -------------------------------------------------
+    def _schedule_midnight_rollover(self):
+        if self._midnight_unsub:
+            with contextlib.suppress(Exception):
+                self._midnight_unsub()
+            self._midnight_unsub = None
+        now = dt_util.now()
+        tomorrow = now + timedelta(days=1)
+        next_midnight = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        self._midnight_unsub = async_track_point_in_time(
+            self.hass, self._midnight_rollover_callback, next_midnight
+        )
+        _LOGGER.debug("Midnight rollover scheduled at %s", next_midnight)
+
+    def _roll_planner_dates_to_today_if_past(self) -> bool:
+        today = dt_util.now().date()
+        changed = False
+
+        def _roll(orig_dt: Optional[datetime]) -> Optional[datetime]:
+            if not orig_dt:
+                return None
+            if orig_dt.date() < today:
+                return orig_dt.replace(year=today.year, month=today.month, day=today.day)
+            return None
+
+        new_start = _roll(self._planner_start_dt)
+        if new_start:
+            self._planner_start_dt = new_start
+            changed = True
+        new_stop = _roll(self._planner_stop_dt)
+        if new_stop:
+            self._planner_stop_dt = new_stop
+            changed = True
+
+        if changed:
+            self.hass.async_create_task(self._save_unified_state())
+            try:
+                self.hass.bus.async_fire(
+                    PLANNER_DATETIME_UPDATED_EVENT,
+                    {"entry_id": self.entry.entry_id}
+                )
+            except Exception:
+                _LOGGER.debug("Failed to fire planner datetime updated event", exc_info=True)
+        return changed
+
+    def _midnight_rollover_callback(self, _dt):
+        try:
+            self._schedule_midnight_rollover()
+            if self.get_mode(MODE_CHARGE_PLANNER):
+                _LOGGER.debug("Midnight rollover: planner mode ON → no change.")
+                return
+            changed = self._roll_planner_dates_to_today_if_past()
+            if changed:
+                _LOGGER.info("Midnight rollover: planner datetimes rolled to today (past dates).")
+            else:
+                _LOGGER.debug("Midnight rollover: no change.")
+        except Exception:
+            _LOGGER.debug("Midnight rollover failed", exc_info=True)
+
+    # --- Unknown state helpers -------------------------------------------------
     @staticmethod
     def _is_known_state(st) -> bool:
         return bool(st and st.state not in ("unknown", "unavailable"))
@@ -375,7 +404,7 @@ class EVLoadController:
             entity_id, raw_state, context, f":{side}" if side else "", self.entry.entry_id
         )
 
-    # ---------------- Persistence ----------------
+    # --- Persistence -----------------------------------------------------------
     async def _load_unified_state(self):
         if self._state_loaded:
             return
@@ -414,18 +443,14 @@ class EVLoadController:
         self._planner_stop_dt = self._parse_dt_option(self._state.get("planner_stop_iso"))
         soc = self._safe_int(self._state.get("soc_limit_percent"))
         self._soc_limit_percent = soc if soc is not None and 0 <= soc <= 100 else None
-
         try:
             self._net_power_target_w = int(self._state.get("net_power_target_w", DEFAULT_NET_POWER_TARGET_W))
         except Exception:
             self._net_power_target_w = DEFAULT_NET_POWER_TARGET_W
-
-        # Auto unlock persisted flag
         try:
             self._auto_unlock_enabled = bool(self._state.get("auto_unlock_enabled", True))
         except Exception:
             self._auto_unlock_enabled = True
-
         self._state_loaded = True
 
     async def _save_unified_state(self):
@@ -442,6 +467,10 @@ class EVLoadController:
             "net_power_target_w": self._net_power_target_w,
             "auto_unlock_enabled": bool(self._auto_unlock_enabled),
         }
+        _LOGGER.debug(
+            "Persist planner datetimes: start=%s stop=%s (planner_enabled=%s)",
+            to_save["planner_start_iso"], to_save["planner_stop_iso"], to_save["planner_enabled"]
+        )
         with contextlib.suppress(Exception):
             await self._state_store.async_save(to_save)
 
@@ -454,7 +483,7 @@ class EVLoadController:
         except Exception:
             return None
 
-    # ---------------- Priority helpers ----------------
+    # --- Priority helpers ------------------------------------------------------
     async def _refresh_priority_mode_flag(self):
         self._priority_mode_enabled = await async_get_priority_mode_enabled(self.hass)
 
@@ -465,7 +494,6 @@ class EVLoadController:
         return pid is None or pid == self.entry.entry_id
 
     async def _have_priority_now(self) -> bool:
-        """Strikte gate: start alleen als deze entry de current priority is bij ingeschakelde prioriteit."""
         await self._refresh_priority_mode_flag()
         if not self._priority_mode_enabled:
             return True
@@ -499,7 +527,7 @@ class EVLoadController:
             self._start_regulation_loop_if_needed()
             self._start_resume_monitor_if_needed()
 
-    # ---------------- Parsing helpers ----------------
+    # --- Parsing helpers -------------------------------------------------------
     def _parse_dt_option(self, s: Optional[str]) -> Optional[datetime]:
         if not s or not isinstance(s, str):
             return None
@@ -529,7 +557,7 @@ class EVLoadController:
             v = 16
         return max(MIN_CURRENT_A, min(32, v))
 
-    # ---------------- Auto unlock flag ----------------
+    # --- Auto unlock flag ------------------------------------------------------
     def get_auto_unlock_enabled(self) -> bool:
         return bool(self._auto_unlock_enabled)
 
@@ -539,10 +567,58 @@ class EVLoadController:
         if prev != self._auto_unlock_enabled:
             _LOGGER.debug("Auto unlock toggle → %s", self._auto_unlock_enabled)
             self.hass.async_create_task(self._save_unified_state())
-            # Reuse mode listeners to refresh UI switches
             self._notify_mode_listeners()
 
-    # ---------------- Lock helpers ----------------
+    # --- Planner persist helpers ----------------------------------------------
+    async def async_set_planner_start_dt_persist(self, dt: Optional[datetime]):
+        if dt:
+            dt = dt_util.as_local(dt)
+        self._planner_start_dt = dt
+        await self._save_unified_state()
+        if self._planner_enabled():
+            await self._hysteresis_apply()
+        # Fire event for UI sync
+        try:
+            self.hass.bus.async_fire(
+                PLANNER_DATETIME_UPDATED_EVENT,
+                {"entry_id": self.entry.entry_id}
+            )
+        except Exception:
+            _LOGGER.debug("Failed firing planner update event (start)")
+
+    async def async_set_planner_stop_dt_persist(self, dt: Optional[datetime]):
+        if dt:
+            dt = dt_util.as_local(dt)
+        self._planner_stop_dt = dt
+        await self._save_unified_state()
+        if self._planner_enabled():
+            await self._hysteresis_apply()
+        try:
+            self.hass.bus.async_fire(
+                PLANNER_DATETIME_UPDATED_EVENT,
+                {"entry_id": self.entry.entry_id}
+            )
+        except Exception:
+            _LOGGER.debug("Failed firing planner update event (stop)")
+
+    # Legacy internal set (used by rollover, non awaited persistence)
+    def set_planner_start_dt(self, dt: Optional[datetime]):
+        if dt:
+            dt = dt_util.as_local(dt)
+        self._planner_start_dt = dt
+        self.hass.async_create_task(self._save_unified_state())
+        if self._planner_enabled():
+            self.hass.async_create_task(self._hysteresis_apply())
+
+    def set_planner_stop_dt(self, dt: Optional[datetime]):
+        if dt:
+            dt = dt_util.as_local(dt)
+        self._planner_stop_dt = dt
+        self.hass.async_create_task(self._save_unified_state())
+        if self._planner_enabled():
+            self.hass.async_create_task(self._hysteresis_apply())
+
+    # --- SoC / Lock helpers ----------------------------------------------------
     def _is_lock_unlocked(self) -> bool:
         if not self._lock_entity:
             return True
@@ -602,17 +678,15 @@ class EVLoadController:
         if not st:
             return False
         s = str(st).strip().lower()
-        exp = str(WALLBOX_STATUS_CHARGING).strip().lower() if WALLBOX_STATUS_CHARGING is not None else "charging"
+        exp = str(WALLBOX_STATUS_CHARGING).strip().lower()
         return s == "charging" or s == exp
 
     def _charging_detected_now(self) -> bool:
-        """Detecteer laden via status of vermogen."""
         status_ok = self._is_status_charging()
         power = self._get_charge_power_w()
         return bool(status_ok or (power is not None and power > 100))
 
     async def _wait_for_charging_detection(self, timeout_s: float = 5.0) -> bool:
-        """Wacht kort op start van laden; True indien gedetecteerd."""
         deadline = time.monotonic() + max(0.5, float(timeout_s))
         while time.monotonic() < deadline:
             if not self._is_cable_connected():
@@ -628,26 +702,26 @@ class EVLoadController:
         async def _runner():
             try:
                 if not already_detected:
-                    deadline = time.monotonic() + 120.0
+                    deadline = time.monotonic() + 120
                     while time.monotonic() < deadline:
                         if not self._is_cable_connected():
-                            _LOGGER.debug("Relock monitor afgebroken: kabel uit")
+                            _LOGGER.debug("Relock monitor aborted: cable disconnected")
                             return
                         status = self._get_wallbox_status()
                         power = self._get_charge_power_w()
                         if self._is_status_charging() or (power is not None and power > 100):
                             _LOGGER.debug(
-                                "Relock monitor: laden gedetecteerd via %s (status=%s, power=%s)",
+                                "Relock monitor: charging detected via %s (status=%s, power=%s)",
                                 "status" if self._is_status_charging() else "power", status, power
                             )
                             break
                         await asyncio.sleep(1)
                     else:
-                        _LOGGER.debug("Relock monitor timeout: geen laden binnen 120s")
+                        _LOGGER.debug("Relock monitor timeout: no charging within 120s")
                         return
                 await asyncio.sleep(RELOCK_AFTER_CHARGING_SECONDS)
                 await self._ensure_lock_locked()
-                _LOGGER.info("Auto re-lock %ss na start laden uitgevoerd", RELOCK_AFTER_CHARGING_SECONDS)
+                _LOGGER.info("Auto re-lock %ss after charging start executed", RELOCK_AFTER_CHARGING_SECONDS)
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -657,7 +731,7 @@ class EVLoadController:
 
         self._relock_task = self.hass.async_create_task(_runner())
 
-    # ---------------- Net power target ----------------
+    # --- Net power target ------------------------------------------------------
     @property
     def net_power_target_w(self) -> int:
         return int(self._net_power_target_w)
@@ -673,7 +747,7 @@ class EVLoadController:
             self.hass.async_create_task(self._save_unified_state())
             _LOGGER.info("Net power target updated → %s W", iv)
 
-    # ---------------- Planner / SoC setters ----------------
+    # --- Planner / SoC getters -------------------------------------------------
     @property
     def planner_start_dt(self) -> Optional[datetime]:
         return self._planner_start_dt
@@ -681,22 +755,6 @@ class EVLoadController:
     @property
     def planner_stop_dt(self) -> Optional[datetime]:
         return self._planner_stop_dt
-
-    def set_planner_start_dt(self, dt: Optional[datetime]):
-        if dt:
-            dt = dt_util.as_local(dt)
-        self._planner_start_dt = dt
-        self.hass.async_create_task(self._save_unified_state())
-        if self._planner_enabled():
-            self.hass.async_create_task(self._hysteresis_apply())
-
-    def set_planner_stop_dt(self, dt: Optional[datetime]):
-        if dt:
-            dt = dt_util.as_local(dt)
-        self._planner_stop_dt = dt
-        self.hass.async_create_task(self._save_unified_state())
-        if self._planner_enabled():
-            self.hass.async_create_task(self._hysteresis_apply())
 
     @property
     def soc_limit_percent(self) -> Optional[int]:
@@ -713,14 +771,13 @@ class EVLoadController:
         self.hass.async_create_task(self._save_unified_state())
         self.hass.async_create_task(self._hysteresis_apply())
 
-    # ---------------- Mode listeners ----------------
+    # --- Mode listeners --------------------------------------------------------
     def add_mode_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
         self._mode_listeners.append(cb)
 
         def _remove():
             with contextlib.suppress(Exception):
                 self._mode_listeners.remove(cb)
-
         return _remove
 
     def _notify_mode_listeners(self):
@@ -728,7 +785,7 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 cb()
 
-    # ---------------- Planner gating ----------------
+    # --- Planner gating --------------------------------------------------------
     def _planner_enabled(self) -> bool:
         return self.get_mode(MODE_CHARGE_PLANNER)
 
@@ -752,7 +809,7 @@ class EVLoadController:
             return True
         return self._planner_window_valid() and self._is_within_planner_window()
 
-    # ---------------- SoC gating ----------------
+    # --- SoC gating ------------------------------------------------------------
     def _get_ev_soc_percent(self) -> Optional[float]:
         if not self._ev_soc_entity:
             return None
@@ -776,7 +833,7 @@ class EVLoadController:
             return True
         return soc < self._soc_limit_percent
 
-    # ---------------- Supply minima ----------------
+    # --- Supply minima ---------------------------------------------------------
     def _effective_regulation_min_power(self) -> int:
         return self._profile_reg_min_w or (4000 if self._supply_phases == 3 else 1300)
 
@@ -784,10 +841,9 @@ class EVLoadController:
         base = self._profile_min_power_6a_w
         return max(base, MIN_CHARGE_POWER_THREE_PHASE_W if self._supply_phases == 3 else MIN_CHARGE_POWER_SINGLE_PHASE_W)
 
-    # ---------------- Initialization / Shutdown ----------------
+    # --- Initialization / Shutdown ---------------------------------------------
     async def async_initialize(self):
         await self._load_unified_state()
-        # Start/Stop volgt Start/Stop Reset bij herstart
         try:
             desired = self.get_mode(MODE_STARTSTOP_RESET)
             if self.get_mode(MODE_START_STOP) != desired:
@@ -801,6 +857,7 @@ class EVLoadController:
         with contextlib.suppress(Exception):
             self._last_soc_allows = self._soc_allows_start()
             self._last_missing_nonempty = bool(self._current_missing_components())
+
         self._subscribe_listeners()
         await self._enforce_start_stop_policy()
         await self._apply_cable_state_initial()
@@ -809,20 +866,29 @@ class EVLoadController:
             self._start_regulation_loop_if_needed()
             self._start_resume_monitor_if_needed()
         self._evaluate_missing_and_start_no_data_timer()
+        self._schedule_midnight_rollover()
 
     async def async_shutdown(self):
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
-        for t in [self._resume_task, self._planner_monitor_task, self._below_lower_task, self._no_data_task, self._reclaim_task, self._relock_task, self._upper_timer_task]:
+        for t in [
+            self._resume_task, self._planner_monitor_task, self._below_lower_task,
+            self._no_data_task, self._reclaim_task, self._relock_task, self._upper_timer_task
+        ]:
             if t and not t.done():
                 t.cancel()
-        self._resume_task = self._planner_monitor_task = self._below_lower_task = self._no_data_task = self._reclaim_task = self._relock_task = self._upper_timer_task = None
+        self._resume_task = self._planner_monitor_task = self._below_lower_task = \
+            self._no_data_task = self._reclaim_task = self._relock_task = self._upper_timer_task = None
         for unsub in list(self._unsub_listeners):
             with contextlib.suppress(Exception):
                 unsub()
         self._unsub_listeners = []
+        if self._midnight_unsub:
+            with contextlib.suppress(Exception):
+                self._midnight_unsub()
+            self._midnight_unsub = None
 
-    # ---------------- Subscriptions ----------------
+    # --- Subscriptions ---------------------------------------------------------
     def _subscribe_listeners(self):
         for unsub in list(self._unsub_listeners):
             with contextlib.suppress(Exception):
@@ -848,14 +914,14 @@ class EVLoadController:
         if self._ev_soc_entity:
             self._unsub_listeners.append(async_track_state_change_event(self.hass, self._ev_soc_entity, self._async_ev_soc_event))
 
-    # ---------------- Helper routines (deduplicated) ----------------
+    # --- Core helper routines --------------------------------------------------
     async def _start_charging_and_reclaim(self):
         await self._ensure_charging_enable_on()
         self._charging_active = True if self._is_charging_enabled() else False
         with contextlib.suppress(Exception):
             await async_clear_priority_pause(self.hass, self.entry.entry_id, "below_lower", notify=False)
         self._stop_reclaim_monitor()
-        self._cancel_upper_timer()  # voorkom dubbele start
+        self._cancel_upper_timer()
         if self._priority_mode_enabled:
             with contextlib.suppress(Exception):
                 await async_align_current_with_order(self.hass)
@@ -881,7 +947,7 @@ class EVLoadController:
         except Exception:
             _LOGGER.debug("Advance failed", exc_info=True)
 
-    # ---------------- Missing data / timers eval ----------------
+    # --- Missing data / timers evaluation --------------------------------------
     def _evaluate_missing_and_start_no_data_timer(self):
         if self._planner_enabled() and (not self._planner_window_valid() or not self._is_within_planner_window()):
             if self._no_data_since is not None:
@@ -919,7 +985,7 @@ class EVLoadController:
 
         self._last_missing_nonempty = now_missing
 
-    # ---------------- Event callbacks ----------------
+    # --- Event callbacks -------------------------------------------------------
     @callback
     def _async_cable_event(self, event: Event):
         old = event.data.get("old_state")
@@ -1061,7 +1127,7 @@ class EVLoadController:
         self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
 
-    # ---------------- Cable handling ----------------
+    # --- Cable handling --------------------------------------------------------
     def _handle_cable_change(self, old_state, new_state):
         connected = (new_state.state if new_state else None) == STATE_ON
         if self._last_cable_connected is not None and connected == self._last_cable_connected:
@@ -1140,11 +1206,10 @@ class EVLoadController:
                 await async_align_current_with_order(self.hass)
                 self._priority_allowed_cache = await self._is_priority_allowed()
 
-        # Manual mode handling
         if self.get_mode(MODE_MANUAL_AUTO):
             if self.get_mode(MODE_START_STOP):
                 if (self._priority_allowed_cache and self._essential_data_available()
-                    and self._planner_window_allows_start() and self._soc_allows_start()):
+                        and self._planner_window_allows_start() and self._soc_allows_start()):
                     if (not self._priority_mode_enabled) or (await self._have_priority_now()):
                         await self._start_charging_and_reclaim()
                 else:
@@ -1209,7 +1274,7 @@ class EVLoadController:
         await self._advance_if_current()
         self._evaluate_missing_and_start_no_data_timer()
 
-    # ---------------- Reclaim monitor ----------------
+    # --- Reclaim monitor -------------------------------------------------------
     def _start_reclaim_monitor_if_needed(self):
         if self._reclaim_task and not self._reclaim_task.done():
             return
@@ -1230,14 +1295,12 @@ class EVLoadController:
                 if net is None:
                     await asyncio.sleep(self._scan_interval)
                     continue
-
                 if self._planner_window_allows_start() and self._soc_allows_start() and self._sustained_above_upper(net):
                     if self._priority_mode_enabled:
                         with contextlib.suppress(Exception):
                             await async_set_priority(self.hass, self.entry.entry_id)
                             await async_align_current_with_order(self.hass)
                     break
-
                 await asyncio.sleep(self._scan_interval)
         except asyncio.CancelledError:
             return
@@ -1246,7 +1309,7 @@ class EVLoadController:
         finally:
             self._reclaim_task = None
 
-    # ---------------- Auto-connect routine ----------------
+    # --- Auto-connect routine --------------------------------------------------
     def _cancel_auto_connect_task(self):
         t = self._auto_connect_task
         self._auto_connect_task = None
@@ -1288,12 +1351,10 @@ class EVLoadController:
                     return
                 if (not self._planner_window_allows_start()) or (not self._soc_allows_start()):
                     above_since = None
-                    await asyncio.sleep(1)
-                    continue
+                    await asyncio.sleep(1); continue
                 if not self._essential_data_available():
                     above_since = None
-                    await asyncio.sleep(1)
-                    continue
+                    await asyncio.sleep(1); continue
                 up = self._current_upper()
                 net = self._get_net_power_w()
                 now = time.monotonic()
@@ -1302,8 +1363,7 @@ class EVLoadController:
                         above_since = now
                     elif (now - above_since) >= EXPORT_SUSTAIN_SECONDS:
                         if self._priority_mode_enabled and not await self._have_priority_now():
-                            await asyncio.sleep(1)
-                            continue
+                            await asyncio.sleep(1); continue
                         await self._start_charging_and_reclaim()
                         self._start_regulation_loop_if_needed()
                         return
@@ -1315,7 +1375,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Auto-connect error: %s", exc)
 
-    # ---------------- Planner monitor ----------------
+    # --- Planner monitor -------------------------------------------------------
     def _start_planner_monitor_if_needed(self):
         if not self._planner_enabled():
             self._stop_planner_monitor()
@@ -1355,7 +1415,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Planner monitor error: %s", exc)
 
-    # ---------------- Hysteresis logic ----------------
+    # --- Hysteresis logic ------------------------------------------------------
     def _current_upper(self) -> float:
         return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
 
@@ -1374,31 +1434,7 @@ class EVLoadController:
             self._reset_above_upper()
             return
 
-        if self.get_mode(MODE_MANUAL_AUTO):
-            self._reset_timers()
-            self._stop_regulation_loop()
-            self._stop_resume_monitor()
-            self._stop_reclaim_monitor()
-            self._reset_above_upper()
-            if not self._is_cable_connected():
-                self._charging_active = False
-                await self._ensure_charging_enable_off()
-                self._cancel_relock_task()
-                return
-            if not (self._planner_window_allows_start() and self._soc_allows_start() and self._priority_allowed_cache):
-                if self._charging_active:
-                    _LOGGER.info("Manual gating → pause.")
-                    await self._pause_basic(set_current_to_min=not preserve_current)
-                return
-            if not self._charging_active:
-                if self._priority_mode_enabled and not await self._have_priority_now():
-                    self._start_resume_monitor_if_needed()
-                    return
-                if self._essential_data_available():
-                    await self._start_charging_and_reclaim()
-                else:
-                    await self._ensure_charging_enable_off()
-            return
+        manual = self.get_mode(MODE_MANUAL_AUTO)
 
         if not self._is_cable_connected():
             self._reset_timers()
@@ -1409,31 +1445,70 @@ class EVLoadController:
             await self._ensure_charging_enable_off()
             self._cancel_relock_task()
             self._reset_above_upper()
+            if self._priority_mode_enabled:
+                await self._advance_if_current()
             return
 
-        if not self._planner_window_allows_start():
+        planner_ok = self._planner_window_allows_start()
+        soc_ok = self._soc_allows_start()
+        priority_ok = self._priority_allowed_cache
+
+        if manual:
+            if not (planner_ok and soc_ok and priority_ok):
+                reasons = []
+                if not planner_ok: reasons.append("planner")
+                if not soc_ok: reasons.append("soc")
+                if not priority_ok: reasons.append("priority")
+                if self._charging_active:
+                    _LOGGER.info("Manual pause: %s", "/".join(reasons))
+                    await self._pause_basic(set_current_to_min=not preserve_current)
+                    if self._priority_mode_enabled and (not planner_ok or not soc_ok):
+                        await self._advance_if_current()
+                else:
+                    if self._priority_mode_enabled and (not planner_ok or not soc_ok):
+                        await self._advance_if_current()
+                return
+
+            if not self._charging_active:
+                if self._priority_mode_enabled and not await self._have_priority_now():
+                    self._start_resume_monitor_if_needed()
+                    return
+                if self._essential_data_available():
+                    await self._start_charging_and_reclaim()
+                else:
+                    await self._ensure_charging_enable_off()
+            return
+
+        # Non-manual gating
+        if not planner_ok:
             if self._charging_active:
                 _LOGGER.info("Planner window inactive → pause.")
                 await self._pause_basic(set_current_to_min=not preserve_current)
-                await self._advance_if_current()
+                if self._priority_mode_enabled:
+                    await self._advance_if_current()
             else:
-                await self._advance_if_current()
+                if self._priority_mode_enabled:
+                    await self._advance_if_current()
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             self._reset_above_upper()
             return
 
-        if not self._soc_allows_start():
+        if not soc_ok:
             if self._charging_active:
-                _LOGGER.info("SOC gating → pause.")
+                _LOGGER.info("SoC limit reached → pause.")
                 await self._pause_basic(set_current_to_min=not preserve_current)
-                await self._advance_if_current()
+                if self._priority_mode_enabled:
+                    await self._advance_if_current()
+            else:
+                if self._priority_mode_enabled:
+                    await self._advance_if_current()
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
             self._reset_above_upper()
             return
 
-        if not self._priority_allowed_cache:
+        if not priority_ok:
             if self._charging_active:
                 await self._pause_basic(set_current_to_min=not preserve_current)
             self._start_resume_monitor_if_needed()
@@ -1489,7 +1564,7 @@ class EVLoadController:
                 self._below_lower_since = None
                 self._cancel_below_lower_timer()
 
-    # ---------------- Timers base ----------------
+    # --- Timers base -----------------------------------------------------------
     def _reset_timers(self):
         self._below_lower_since = None
         self._no_data_since = None
@@ -1603,7 +1678,7 @@ class EVLoadController:
         return False
 
     async def _pause_due_below_lower(self, duration: int):
-        _LOGGER.info("Pause: net < lower voor >= %ds → prioriteit behouden, wacht op reclaim", duration)
+        _LOGGER.info("Pause: net < lower for ≥ %ds → retain priority (reclaim)", duration)
         self._below_lower_since = None
         self._cancel_below_lower_timer()
         self._charging_active = False
@@ -1622,7 +1697,7 @@ class EVLoadController:
             _LOGGER.error("Below-lower reclaim setup failed", exc_info=True)
 
     async def _pause_due_no_data(self, duration: int):
-        _LOGGER.info("Pause: missing data voor >= %ds → handover", duration)
+        _LOGGER.info("Pause: missing data for ≥ %ds → handover", duration)
         self._no_data_since = None
         self._cancel_no_data_timer()
         self._charging_active = False
@@ -1639,7 +1714,7 @@ class EVLoadController:
         except Exception:
             _LOGGER.error("No-data handover failed", exc_info=True)
 
-    # ---------------- Missing components ----------------
+    # --- Missing component helpers --------------------------------------------
     def _current_missing_components(self) -> List[str]:
         items: List[str] = []
         if self._get_net_power_w() is None:
@@ -1653,7 +1728,7 @@ class EVLoadController:
     def _essential_data_available(self) -> bool:
         return not self._current_missing_components()
 
-    # ---------------- Regulation loop ----------------
+    # --- Regulation loop -------------------------------------------------------
     def _start_regulation_loop_if_needed(self):
         if self._regulation_task and not self._regulation_task.done():
             return
@@ -1662,10 +1737,10 @@ class EVLoadController:
         self._regulation_task = self.hass.async_create_task(self._regulation_loop())
 
     def _stop_regulation_loop(self):
-        task = self._regulation_task
+        t = self._regulation_task
         self._regulation_task = None
-        if task and not task.done():
-            task.cancel()
+        if t and not t.done():
+            t.cancel()
 
     def _should_regulate(self) -> bool:
         return (
@@ -1685,10 +1760,8 @@ class EVLoadController:
                 if not self._should_regulate():
                     if self._charging_active and (not self._planner_window_allows_start() or not self._soc_allows_start()):
                         parts = []
-                        if not self._planner_window_allows_start():
-                            parts.append("planner")
-                        if not self._soc_allows_start():
-                            parts.append("soc")
+                        if not self._planner_window_allows_start(): parts.append("planner")
+                        if not self._soc_allows_start(): parts.append("soc")
                         _LOGGER.info("RegLoop gating (%s) → pause.", "/".join(parts))
                         await self._pause_basic(set_current_to_min=True)
                         await self._advance_if_current()
@@ -1718,7 +1791,7 @@ class EVLoadController:
 
                 if self._is_status_charging() or (charge_power is not None and charge_power > 100):
                     if not self._relock_task:
-                        _LOGGER.debug("RegLoop: laden gedetecteerd → relock watcher (direct)")
+                        _LOGGER.debug("RegLoop: charging detected → relock watcher (direct)")
                         self._schedule_relock_after_charging_start(already_detected=True)
 
                 if net is not None:
@@ -1773,7 +1846,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Regulation loop error: %s", exc)
 
-    # ---------------- Resume monitor ----------------
+    # --- Resume monitor --------------------------------------------------------
     def _start_resume_monitor_if_needed(self):
         if self._resume_task and not self._resume_task.done():
             return
@@ -1782,10 +1855,10 @@ class EVLoadController:
         self._resume_task = self.hass.async_create_task(self._resume_monitor_loop())
 
     def _stop_resume_monitor(self):
-        task = self._resume_task
+        t = self._resume_task
         self._resume_task = None
-        if task and not task.done():
-            task.cancel()
+        if t and not t.done():
+            t.cancel()
 
     def _should_resume_monitor(self) -> bool:
         return (
@@ -1807,13 +1880,11 @@ class EVLoadController:
                 if net is not None:
                     if self._sustained_above_upper(net) and self.get_mode(MODE_START_STOP):
                         if self._priority_mode_enabled and not await self._have_priority_now():
-                            await asyncio.sleep(self._scan_interval)
-                            continue
+                            await asyncio.sleep(self._scan_interval); continue
                         await self._start_charging_and_reclaim()
                         self._stop_resume_monitor()
                         self._start_regulation_loop_if_needed()
                         return
-                    # Als net ≥ upper maar debounce nog loopt → plan timer
                     if net >= self._current_upper() and not self._is_charging_enabled():
                         now = time.monotonic()
                         elapsed = 0.0 if self._above_upper_since_ts is None else (now - self._above_upper_since_ts)
@@ -1826,7 +1897,7 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Resume loop error: %s", exc)
 
-    # ---------------- Sensor getters / setters ----------------
+    # --- Sensor getters / setters ----------------------------------------------
     def _get_wallbox_status(self) -> Optional[str]:
         if not self._wallbox_status_entity:
             return None
@@ -1899,10 +1970,8 @@ class EVLoadController:
         imp = self._get_sensor_float(self._grid_import_entity)
         if exp is None or imp is None:
             return None
-        if exp < 0:
-            exp = 0.0
-        if imp < 0:
-            imp = 0.0
+        if exp < 0: exp = 0.0
+        if imp < 0: imp = 0.0
         return exp - imp
 
     def _get_charge_power_w(self) -> Optional[float]:
@@ -1940,13 +2009,13 @@ class EVLoadController:
             if self._lock_entity and not self._is_lock_unlocked() and self._is_cable_connected():
                 if is_initial_start:
                     if not self._auto_unlock_enabled:
-                        _LOGGER.debug("Initial start: Auto unlock is OFF → no unlock attempt")
+                        _LOGGER.debug("Initial start: Auto unlock OFF → abort")
                         return
                     if (self._essential_data_available() and self._planner_window_allows_start()
                             and self._soc_allows_start() and self._priority_allowed_cache):
                         ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
                         if not ok:
-                            _LOGGER.info("Initial start: unlock mislukt, enable ON afgebroken")
+                            _LOGGER.info("Initial start: unlock failed, aborting enable ON")
                             return
                         did_unlock = True
                         self._pending_initial_start = False
@@ -1960,11 +2029,11 @@ class EVLoadController:
                     if await self._wait_for_charging_detection(timeout_s=5.0):
                         return
                     if not self._auto_unlock_enabled:
-                        _LOGGER.debug("Resume: Auto unlock is OFF → no unlock fallback")
+                        _LOGGER.debug("Resume: Auto unlock OFF → skip unlock fallback")
                         return
                     ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
                     if not ok:
-                        _LOGGER.info("Resume fallback unlock mislukt; start afgebroken")
+                        _LOGGER.info("Resume fallback unlock failed; aborting start")
                         return
                     did_unlock = True
 
@@ -1990,7 +2059,7 @@ class EVLoadController:
             self._reset_above_upper()
             await self._ensure_charging_enable_off()
 
-    # ---------------- Mode management ----------------
+    # --- Mode management -------------------------------------------------------
     def get_mode(self, mode: str) -> bool:
         return bool(self._modes.get(mode, False))
 
@@ -2080,6 +2149,8 @@ class EVLoadController:
                     self._stop_planner_monitor()
                     if self._priority_mode_enabled:
                         self.hass.async_create_task(async_align_current_with_order(self.hass))
+                # Roll past dates on any planner toggle
+                self._roll_planner_dates_to_today_if_past()
                 self.hass.async_create_task(self._hysteresis_apply())
                 return
 
@@ -2091,6 +2162,6 @@ class EVLoadController:
         finally:
             self._notify_mode_listeners()
 
-    # ---------------- Public helpers ----------------
+    # --- Public helpers --------------------------------------------------------
     def get_min_charge_power_w(self) -> int:
         return self._effective_min_charge_power()
