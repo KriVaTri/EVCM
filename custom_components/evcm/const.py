@@ -4,10 +4,9 @@ from homeassistant.const import Platform
 
 DOMAIN = "evcm"
 
-# Platforms: SWITCH (modes + global priority charging), DATETIME (planner window), NUMBER (EV SoC limit + priority order)
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER]
 
-# Persistant ECO (legacy)
+# Legacy option key
 CONF_OPT_MODE_ECO = "mode_eco"
 
 CONF_NAME = "name"
@@ -31,13 +30,12 @@ CONF_EV_BATTERY_LEVEL = "ev_battery_level_sensor"
 
 CONF_DEVICE_ID = "device_id"
 
-# Interval
+# Poll / interval
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 15
 
 CONF_SUPPLY_PROFILE = "supply_profile"
-
 CONF_WALLBOX_THREE_PHASE = "wallbox_three_phase"
 DEFAULT_WALLBOX_THREE_PHASE = False
 
@@ -123,11 +121,7 @@ DEFAULT_ECO_OFF_LOWER = -7000
 MIN_THRESHOLD_VALUE = -25000
 MAX_THRESHOLD_VALUE = 25000
 
-# Band-minimum
-MIN_BAND_SINGLE_PHASE = 2000
-MIN_BAND_THREE_PHASE = 5000
-
-# Historical EU min fallback
+# Historical minimums (charging power fallback)
 MIN_CHARGE_POWER_SINGLE_PHASE_W = 1400
 MIN_CHARGE_POWER_THREE_PHASE_W = 4200
 
@@ -141,7 +135,7 @@ SUSTAIN_MAX_SECONDS = 3600
 PLANNER_START_ENTITY_NAME = "planner start"
 PLANNER_STOP_ENTITY_NAME = "planner stop"
 
-# Persist keys for planner + EV SoC limit (legacy options keys remain for compatibility)
+# Persistence keys
 CONF_PLANNER_START_ISO = "planner_start_iso"
 CONF_PLANNER_STOP_ISO = "planner_stop_iso"
 CONF_SOC_LIMIT_PERCENT = "soc_limit_percent"
@@ -151,9 +145,17 @@ CONF_MAX_CURRENT_LIMIT_A = "max_current_limit_a"
 ABS_MIN_CURRENT_A = 6
 ABS_MAX_CURRENT_A = 32
 
-# Net power target (additive, UI-neutral)
+# Net power target
 CONF_NET_POWER_TARGET_W = "net_power_target_w"
 DEFAULT_NET_POWER_TARGET_W = 0
 NET_POWER_TARGET_MIN_W = -5000
 NET_POWER_TARGET_MAX_W = 5000
 NET_POWER_TARGET_STEP_W = 50
+
+# Restored legacy band minimum constants (required by config_flow and possibly other modules).
+# Keep for backward compatibility; if refactoring, update imports then remove.
+MIN_BAND_SINGLE_PHASE = 2000
+MIN_BAND_THREE_PHASE = 5000
+
+# Event name for planner datetime updates
+PLANNER_DATETIME_UPDATED_EVENT = "evcm_planner_datetime_updated"
