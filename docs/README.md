@@ -333,9 +333,9 @@ Date rollover:
 
 ## 12) Sustain timers (below-lower / no-data)
 
-If `sustain_seconds` > 0:
-- Below-lower: if net < lower continuously for ≥ sustain_seconds → pause
-- No-data: if essential data is missing continuously for ≥ sustain_seconds → pause
+If `sustain time` > 0:
+- Below-lower: if net < lower continuously for ≥ sustain time → pause
+- No-data: if essential data is missing continuously for ≥ sustain time → pause
 - If set to 0, pausing happens immediately on these conditions
 
 The timers are canceled/reset when conditions no longer apply.
