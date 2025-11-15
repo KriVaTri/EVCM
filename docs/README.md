@@ -375,12 +375,13 @@ Per entry:
   - `{Name} ECO`
   - `{Name} Start/Stop`
   - `{Name} Manual`
-  - `{Name} Charge Planner`
+  - `{Name} Planner`
   - `{Name} Start/Stop Reset`
   - `{Name} Auto unlock`
 - Numbers
   - `{Name} priority order` (integer, 1‑based)
   - `{Name} SoC limit` (integer, unit “%”)
+  - `{Name} Net tower target` (integer, unit “W”)
 - DateTime
   - `{Name} planner start`
   - `{Name} planner stop`
