@@ -1,4 +1,4 @@
-# EVCM – Smart EV Charging for Home Assistant
+# EVCM – EV Charging Manager for Home Assistant
 
 [![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=release)](https://github.com/KriVaTri/EVCM/releases)
 
