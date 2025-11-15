@@ -466,7 +466,7 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 | No UI refresh after order change | Missing event fire | EVCM fires `evcm_priority_refresh` after each order update; ensure automations do not bypass order helpers |
 | Charging never starts | Below upper threshold / invalid planner / missing data / priority gating | Check thresholds, planner window, sensor availability, and Priority Charging state |
 | SoC limit ignored | No SoC sensor configured or limit unset | Configure EV SoC sensor and set a limit |
-| Pauses too quickly | Sustain = 0 | Increase `sustain_seconds` |
+| Pauses too quickly | Sustain = 0 | Increase `sustain time` |
 | Charging doesn’t start with a locked cable | Auto unlock is OFF | Manually unlock the wallbox lock or turn Auto unlock ON |
 
 Enable debug logs for `custom_components.evcm` if you need deeper insight.
