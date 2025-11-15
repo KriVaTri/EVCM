@@ -203,7 +203,7 @@ EVCM creates a set of switches per configured entry:
 - Priority Charging (global proxy per entry)
 - ECO
 - Manual
-- Charge Planner
+- Planner
 - Start/Stop
 - Start/Stop Reset
 - Auto unlock
