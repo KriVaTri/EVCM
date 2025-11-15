@@ -6,7 +6,7 @@ DOMAIN = "evcm"
 
 PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER]
 
-# Legacy option key
+# Legacy option keys
 CONF_OPT_MODE_ECO = "mode_eco"
 
 CONF_NAME = "name"
@@ -30,12 +30,13 @@ CONF_EV_BATTERY_LEVEL = "ev_battery_level_sensor"
 
 CONF_DEVICE_ID = "device_id"
 
-# Poll / interval
+# Interval
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 15
 
 CONF_SUPPLY_PROFILE = "supply_profile"
+
 CONF_WALLBOX_THREE_PHASE = "wallbox_three_phase"
 DEFAULT_WALLBOX_THREE_PHASE = False
 
@@ -121,7 +122,7 @@ DEFAULT_ECO_OFF_LOWER = -7000
 MIN_THRESHOLD_VALUE = -25000
 MAX_THRESHOLD_VALUE = 25000
 
-# Historical minimums (charging power fallback)
+# Historical minimums
 MIN_CHARGE_POWER_SINGLE_PHASE_W = 1400
 MIN_CHARGE_POWER_THREE_PHASE_W = 4200
 
@@ -135,10 +136,13 @@ SUSTAIN_MAX_SECONDS = 3600
 PLANNER_START_ENTITY_NAME = "planner start"
 PLANNER_STOP_ENTITY_NAME = "planner stop"
 
-# Persistence keys
+# Persist keys
 CONF_PLANNER_START_ISO = "planner_start_iso"
 CONF_PLANNER_STOP_ISO = "planner_stop_iso"
 CONF_SOC_LIMIT_PERCENT = "soc_limit_percent"
+
+# Default SoC limit on setup
+DEFAULT_SOC_LIMIT_PERCENT = 80
 
 # Wallbox current limit
 CONF_MAX_CURRENT_LIMIT_A = "max_current_limit_a"
@@ -153,7 +157,6 @@ NET_POWER_TARGET_MAX_W = 5000
 NET_POWER_TARGET_STEP_W = 50
 
 # Restored legacy band minimum constants (required by config_flow and possibly other modules).
-# Keep for backward compatibility; if refactoring, update imports then remove.
 MIN_BAND_SINGLE_PHASE = 2000
 MIN_BAND_THREE_PHASE = 5000
 
