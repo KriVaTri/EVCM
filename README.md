@@ -61,12 +61,13 @@ If you have these, you can use EVCM.
 During the config flow:
 1. Pick a name and how you provide net power (single net sensor vs export + import)
 2. Choose 1‑phase or 3‑phase (affects minimum power math)
-3. Map the charger and grid sensors
-4. Enter two threshold bands:  
+3. Select your wallbox (optional)
+4. Map the charger and grid sensors
+5. Enter two threshold bands:  
    - ECO ON (used when the ECO switch is ON)  
    - ECO OFF (used when the ECO switch is OFF)
-5. (Optional) Set an SoC limit or a planner time window
-6. Save—entities (switches & number inputs) appear
+6. (Optional) Set an SoC limit or a planner time window
+7. Save—entities (switches & number inputs) appear
 
 Turn the `Start/Stop` switch ON to let it work.
 
