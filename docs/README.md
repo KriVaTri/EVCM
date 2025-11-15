@@ -318,12 +318,17 @@ DateTime entities:
 - “{Entry Name} planner start”
 - “{Entry Name} planner stop”
 
-When Charge Planner is ON:
+When Planner is ON:
 - If the window is invalid (missing or start ≥ stop), charging is not allowed to start.
 - Outside the window, charging is paused (enable OFF and regulation loop stopped).
 - Upon entering the window, with thresholds/SoC/priority satisfied, charging starts automatically.
 
 All times are treated as local.
+
+Date rollover:
+- At midnight local time or When toggling the planner switch, if date in planner start or stop is a past date, the date will be set to today, hours and minutes will not change.
+- Future dates will never be reset to today.
+
 
 ---
 
