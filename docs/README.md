@@ -326,9 +326,8 @@ When Planner is ON:
 All times are treated as local.
 
 Date rollover:
-- At midnight local time or When toggling the planner switch, if date in planner start or stop is a past date, the date will be set to today, hours and minutes will not change.
+- At midnight local time or when toggling the planner switch, if date in planner start or stop is a past date, the date will be set to today, hours and minutes will not change.
 - Future dates will never be reset to today.
-
 
 ---
 
