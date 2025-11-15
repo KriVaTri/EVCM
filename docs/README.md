@@ -454,7 +454,7 @@ Charging will only resume once the upper threshold is reached for the duration s
 
 The "sustain" and "debounce upper" timers are designed to account for fluctuations, such as cloud cover (e.g., in solar energy systems), and to prevent the charging process from toggling too frequently.
 
-When ECO mode is turned on, the "ECO on" upper and lower thresholds will be used, while the "ECO off" thresholds will be ignored (and vice versa).
+When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used, while the "ECO OFF" thresholds will be ignored (and vice versa).
 
 ---
 
