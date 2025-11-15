@@ -1,7 +1,6 @@
 # EVCM – Smart EV Charging for Home Assistant (Simple Overview)
 
 [![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=release)]
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-blue)](https://github.com/hacs/integration)
 
 > This custom integration is all about plugging your EV into your wallbox and forget about it, you don't have to worry about consuming excessive grid energy or pause charging when conditions are not good. (e.g. low solar surplus)
 > EVCM helps your Home Assistant system charge one or more electric cars only when it makes sense and is very versatile and flexible in its setup.
@@ -24,7 +23,7 @@ You set a few numbers and switches; it does the boring part.
 
 ## Example of a typical EVCM entry:
 
-{picture goes here}
+<img width="743" height="1105" alt="EVCM" src="https://github.com/user-attachments/assets/f7ea7e6c-62c1-4724-9a1d-95178f3422be" />
 
 ---
 
