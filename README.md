@@ -93,16 +93,6 @@ Turn the `Start/Stop` switch ON to let it work.
 
 ---
 
-## Installation
-
-- Use HACS and add a custom repository, copy [https://github.com/KriVaTri/EVCM](https://github.com/KriVaTri/EVCM) into the repository field and choose integration as type.
-
-- Or Copy the folder `custom_components/evcm/` into your Home Assistant configuration directory.
-Restart Home Assistant.
-Add the integration via Settings → Devices & Services → “EVCM”.
-
----
-
 ## Where to go next
 
 - Full deep-dive (all concepts, events, edge cases): [docs/README.md](docs/README.md)
