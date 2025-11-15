@@ -123,7 +123,7 @@ The configuration flow has three steps:
    - Sustain seconds for below-lower and missing-data pauses
    - Max current limit (A)
      - ATTENTION! this current limit does not replace the current limition set in your wallbox (preventing your circuit breaker from tripping).
-     - Use this current setting as an additional current limitation when charging in auto regulation mode.
+     - Use this current setting as an additional current limitation when charging in auto current regulation mode.
 
 Validation includes:
 - Minimum band width (phase-dependent)
