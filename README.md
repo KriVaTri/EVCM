@@ -48,7 +48,7 @@ If you have these, you can use EVCM.
 
 ---
 
-## Installation (short version)
+## Installation
 
 1. Via HACS: add custom repository `https://github.com/KriVaTri/EVCM` (type: Integration), install, then restart Home Assistant
 2. Or manual: copy `custom_components/evcm/` into your Home Assistant `config` directory and restart
@@ -56,7 +56,7 @@ If you have these, you can use EVCM.
 
 ---
 
-## First setup (what you’ll click)
+## First setup
 
 During the config flow:
 1. Pick a name and how you provide net power (single net sensor vs export + import)
@@ -84,7 +84,7 @@ Turn the `Start/Stop` switch ON to let it work.
 
 ---
 
-## Multiple chargers?
+## Multiple chargers
 
 - Each charger (“entry”) has its own switches
 - Turn `Priority Charging` ON (any entry’s proxy switch) to let only one charge at a time
