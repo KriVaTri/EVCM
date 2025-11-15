@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Optional
 
 from homeassistant.components.number import NumberEntity, NumberMode
@@ -9,7 +10,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import slugify
 
-from .const import DOMAIN, CONF_NAME, NET_POWER_TARGET_MIN_W, NET_POWER_TARGET_MAX_W, NET_POWER_TARGET_STEP_W
+from .const import (
+    DOMAIN,
+    CONF_NAME,
+    NET_POWER_TARGET_MIN_W,
+    NET_POWER_TARGET_MAX_W,
+    NET_POWER_TARGET_STEP_W,
+    DEFAULT_SOC_LIMIT_PERCENT,
+)
 from .controller import EVLoadController
 from .priority import async_get_order, async_set_entry_order_index
 
@@ -19,7 +27,11 @@ def _base_name(entry: ConfigEntry) -> str:
     return name or "EVCM"
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback
+):
     data = hass.data.get(DOMAIN, {}).get(entry.entry_id) or {}
     controller: Optional[EVLoadController] = data.get("controller")
     if controller is None:
@@ -76,7 +88,13 @@ class _SocLimitNumber(NumberEntity):
     @property
     def native_value(self) -> Optional[float]:
         val = self._controller.soc_limit_percent
-        return None if val is None else int(val)
+        return int(val if val is not None else DEFAULT_SOC_LIMIT_PERCENT)
+
+    async def async_added_to_hass(self) -> None:
+        if self._controller.soc_limit_percent is None:
+            with contextlib.suppress(Exception):
+                self._controller.set_soc_limit_percent(DEFAULT_SOC_LIMIT_PERCENT)
+        self.async_write_ha_state()
 
     async def async_set_native_value(self, value: float) -> None:
         iv = max(0, min(100, int(round(float(value)))))
@@ -103,7 +121,9 @@ class _PriorityOrderNumber(NumberEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._refresh_cache()
-        self.async_on_remove(self.hass.bus.async_listen("evcm_priority_refresh", self._handle_refresh_event))
+        self.async_on_remove(
+            self.hass.bus.async_listen("evcm_priority_refresh", self._handle_refresh_event)
+        )
 
     @property
     def device_info(self):
