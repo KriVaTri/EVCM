@@ -27,8 +27,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     base = _base_name(entry)
 
-    friendly_name_soc = f"{base} EV SoC limit"
-    object_id_soc = slugify(f"evcm {base} EV SoC limit")
+    friendly_name_soc = f"{base} SoC limit"
+    object_id_soc = slugify(f"evcm {base} SoC limit")
 
     friendly_name_order = f"{base} priority order"
     object_id_order = slugify(f"evcm {base} priority order")
