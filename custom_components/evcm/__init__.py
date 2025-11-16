@@ -4,6 +4,7 @@ import logging
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+from homeassistant.helpers import config_validation as cv
 
 from .const import (
     DOMAIN,
@@ -16,6 +17,8 @@ from .const import (
 from .priority import async_cleanup_priority_if_removed
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 IGNORED_OPTION_KEYS = {
     CONF_OPT_MODE_ECO,
