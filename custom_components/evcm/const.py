@@ -156,9 +156,21 @@ NET_POWER_TARGET_MIN_W = -5000
 NET_POWER_TARGET_MAX_W = 5000
 NET_POWER_TARGET_STEP_W = 50
 
-# Restored legacy band minimum constants (required by config_flow and possibly other modules).
-MIN_BAND_SINGLE_PHASE = 2000
-MIN_BAND_THREE_PHASE = 5000
+# Profile-specific band minimum constants
+MIN_BAND_230 = 1700
+MIN_BAND_400 = 5000
+MIN_BAND_208 = 2600
+MIN_BAND_200 = 1500
+MIN_BAND_120 = 1000
+
+# Map supply profiles to their minimum band
+SUPPLY_PROFILE_MIN_BAND = {
+    "eu_1ph_230": MIN_BAND_230,
+    "eu_3ph_400": MIN_BAND_400,
+    "na_3ph_208": MIN_BAND_208,
+    "jp_1ph_200": MIN_BAND_200,
+    "na_1ph_120": MIN_BAND_120,
+}
 
 # Event name for planner datetime updates
 PLANNER_DATETIME_UPDATED_EVENT = "evcm_planner_datetime_updated"
