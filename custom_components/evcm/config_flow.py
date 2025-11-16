@@ -39,8 +39,10 @@ from .const import (
     DEFAULT_ECO_OFF_LOWER,
     MIN_THRESHOLD_VALUE,
     MAX_THRESHOLD_VALUE,
-    MIN_BAND_SINGLE_PHASE,
-    MIN_BAND_THREE_PHASE,
+    # Profile-specific min band
+    SUPPLY_PROFILE_MIN_BAND,
+    MIN_BAND_230,
+    MIN_BAND_400,
     # Timers and intervals
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -84,9 +86,8 @@ def _normalize_number(raw) -> float:
     return float(s)
 
 
-def _validate_thresholds(data: dict, three_phase: bool) -> dict[str, str]:
+def _validate_thresholds(data: dict, band_min: float) -> dict[str, str]:
     errors: dict[str, str] = {}
-    band_min = MIN_BAND_THREE_PHASE if three_phase else MIN_BAND_SINGLE_PHASE
     try:
         on_up = _normalize_number(data.get(CONF_ECO_ON_UPPER))
         on_lo = _normalize_number(data.get(CONF_ECO_ON_LOWER))
@@ -478,6 +479,11 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for k, v in (user_input or {}).items():
             self._s_defaults[k] = v
 
+        # Select band minimum by supply profile (fallback by phases)
+        band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
+        if band_min is None:
+            band_min = MIN_BAND_400 if three_phase else MIN_BAND_230
+
         # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER),
@@ -485,7 +491,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ECO_OFF_UPPER: self._s_defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER),
             CONF_ECO_OFF_LOWER: self._s_defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER),
         }
-        errors = _validate_thresholds(thresh_data, three_phase)
+        errors = _validate_thresholds(thresh_data, band_min)
 
         # Scan interval
         try:
@@ -657,6 +663,11 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         for k, v in (user_input or {}).items():
             self._values[k] = v
 
+        # Select band minimum by supply profile (fallback by phases)
+        band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
+        if band_min is None:
+            band_min = MIN_BAND_400 if three_phase else MIN_BAND_230
+
         # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER),
@@ -664,7 +675,7 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             CONF_ECO_OFF_UPPER: self._values.get(CONF_ECO_OFF_UPPER),
             CONF_ECO_OFF_LOWER: self._values.get(CONF_ECO_OFF_LOWER),
         }
-        errors = _validate_thresholds(thresh_data, three_phase)
+        errors = _validate_thresholds(thresh_data, band_min)
 
         # Validate scan interval
         try:
