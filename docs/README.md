@@ -122,7 +122,7 @@ The configuration flow has three steps:
    - Upper start debounce (s): seconds that net ≥ upper must persist before (re)start. Set 0 to start immediately.
    - Sustain seconds for below-lower and missing-data pauses
    - Max current limit (A)
-     - ATTENTION! this current limit does not replace the current limition set in your wallbox (preventing your circuit breaker from tripping).
+     - This current limit does not replace the current limition set in your wallbox preventing your circuit breaker from tripping.
      - Use this current setting as an additional current limitation when charging in auto current regulation mode.
 
 Validation includes:
