@@ -51,7 +51,7 @@ If you have these, you can use EVCM.
 
 ## Installation
 
-1. Via HACS: add custom repository `https://github.com/KriVaTri/EVCM` (type: Integration), install, then restart Home Assistant
+1. Via HACS: search for "EVCM", download and restart Home Assistant
 2. Or manual: copy `custom_components/evcm/` into your Home Assistant `config` directory and restart
 3. Add integration: Home Assistant → Settings → Devices & Services → Add Integration → search “EVCM”
 
