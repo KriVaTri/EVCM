@@ -78,12 +78,13 @@ This document explains how EVCM works, how to configure it, and which entities i
 - No unintended reordering: setting current priority never mutates the global order.
 - Upper start debounce for clean starts on the upper threshold.
 - Auto unlock (switch): ON = default behaviour (auto-unlock when all start conditions are met); OFF = user must manually unlock before charging can start. Automatic re-locking remains unchanged.
+- Start/stop acts like a killswitch and will stop / prevent starting the charging process.
 
 ---
 
 ## 3) Installation
 
-- Use HACS and add a custom repository, copy [https://github.com/KriVaTri/EVCM](https://github.com/KriVaTri/EVCM) into the repository field and choose integration as type.
+- Use HACS: search for "EVCM", download and restart Home Assistant.
 
 - Or Copy the folder `custom_components/evcm/` into your Home Assistant configuration directory.
 Ensure `manifest.json` contains `"domain": "evcm"`.
