@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import contextlib
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -36,23 +37,38 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .controller import EVLoadController
 
+    # Instantiate controller and store immediately so platforms can find it
+    hass.data.setdefault(DOMAIN, {})
+
     try:
         controller = EVLoadController(hass, entry)
-        await controller.async_initialize()
     except Exception as exc:
-        _LOGGER.error("Controller initialization failed for %s: %s", DOMAIN, exc)
-        hass.data.setdefault(DOMAIN, {})
+        _LOGGER.error("Controller construction failed for %s: %s", DOMAIN, exc)
         hass.data[DOMAIN][entry.entry_id] = {
             "controller": None,
             "last_options": dict(entry.options),
         }
+        # Don't block HA startup on failure of one entry
         return False
 
-    hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "controller": controller,
         "last_options": dict(entry.options),
     }
+
+    # Initialize controller in the background to avoid blocking HA startup
+    init_task = hass.async_create_task(controller.async_initialize())
+
+    def _log_init_result(task):
+        with contextlib.suppress(Exception):
+            task.result()
+        # If the task raised, log it but don't block startup
+        try:
+            task.result()
+        except Exception as exc:
+            _LOGGER.error("Controller initialization failed for %s: %s", DOMAIN, exc, exc_info=True)
+
+    init_task.add_done_callback(_log_init_result)
 
     # Post-start hook: must schedule in a thread-safe way.
     # hass.add_job is safe from any context; @callback ensures listener runs in loop.
@@ -67,7 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception as exc:
-        _LOGGER.error("Platform forward failed: %s", exc)
+        _LOGGER.error("Platform forward failed: %s", exc, exc_info=True)
         try:
             await controller.async_shutdown()
         except Exception:
