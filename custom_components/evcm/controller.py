@@ -442,6 +442,12 @@ class EVLoadController:
     def _report_unknown(self, entity_id: Optional[str], raw_state: Optional[str], context: str, side: Optional[str] = None):
         if not entity_id or not self._should_report_unknown(context, side):
             return
+        st = self.hass.states.get(entity_id)
+        if st is not None:
+            if st.attributes.get("restored"):
+                return
+            if raw_state in ("unavailable", "unknown") and (time.monotonic() - self._init_monotonic) < UNKNOWN_STARTUP_GRACE_SECONDS:
+                return
         now = time.monotonic()
         key = (entity_id, f"{context}:{side}" if side else context)
         last = self._unknown_last_emit.get(key)
