@@ -18,6 +18,8 @@ from .priority import (
     async_get_order,
     async_get_priority,
     async_set_priority,
+    async_align_current_with_order,
+    async_advance_priority_to_next,
 )
 
 
@@ -34,30 +36,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     new_entities: list[SwitchEntity] = []
 
-    # Add a per-entry Priority Charging proxy switch (same global state, per-device placement)
     base = _base_name(entry)
     prio_obj_id = slugify(f"evcm {base} Priority Charging")
     new_entities.append(PriorityChargingSwitchPerEntry(hass, entry.entry_id, friendly_name=f"{base} Priority Charging", object_id=prio_obj_id))
 
-    # Auto unlock switch (per entry)
     auto_unlock_obj_id = slugify(f"evcm {base} Auto unlock")
     new_entities.append(_AutoUnlockSwitch(controller, entry.entry_id, friendly_name=f"{base} Auto unlock", object_id=auto_unlock_obj_id))
 
-    # Mode switches (per entry)
     for mode_key in MODES:
         label = MODE_LABELS.get(mode_key, mode_key)
         friendly_name = f"{base} {label}"
         object_id = slugify(f"evcm {base} {label}")
-        new_entities.append(_ModeSwitch(controller, entry.entry_id, mode_key, friendly_name, object_id))
+        new_entities.append(_ModeSwitch(hass, controller, entry.entry_id, mode_key, friendly_name, object_id))
 
     async_add_entities(new_entities)
 
 
 class PriorityChargingSwitchPerEntry(SwitchEntity):
-    """
-    Per-entry proxy for the global Priority Charging mode.
-    All instances read/write the same global flag and stay in sync via 'evcm_priority_refresh' bus events.
-    """
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:star-circle"
@@ -73,7 +68,6 @@ class PriorityChargingSwitchPerEntry(SwitchEntity):
 
     async def async_added_to_hass(self) -> None:
         await self._refresh()
-        # Refresh when global priority mode or priority/order changes
         self._unsub_bus = self.hass.bus.async_listen("evcm_priority_refresh", self._handle_global_refresh)
 
     async def async_will_remove_from_hass(self) -> None:
@@ -97,10 +91,8 @@ class PriorityChargingSwitchPerEntry(SwitchEntity):
         return self._is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        # Enable global mode
         await async_set_priority_mode_enabled(self.hass, True)
         await self._refresh()
-        # Ensure current priority is set if missing (choose first in order)
         order = await async_get_order(self.hass)
         current = await async_get_priority(self.hass)
         if not current and order:
@@ -140,7 +132,6 @@ class _AutoUnlockSwitch(SwitchEntity):
     async def async_added_to_hass(self) -> None:
         @callback
         def _on_modes_changed() -> None:
-            # Reuse mode listener infra to refresh this switch on state changes
             self.async_write_ha_state()
         self._unsub_mode_listener = self._controller.add_mode_listener(_on_modes_changed)
 
@@ -185,7 +176,8 @@ class _ModeSwitch(SwitchEntity):
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, controller: EVLoadController, entry_id: str, mode_key: str, friendly_name: str, object_id: str) -> None:
+    def __init__(self, hass: HomeAssistant, controller: EVLoadController, entry_id: str, mode_key: str, friendly_name: str, object_id: str) -> None:
+        self.hass = hass
         self._controller = controller
         self._entry_id = entry_id
         self._mode_key = mode_key
@@ -215,10 +207,30 @@ class _ModeSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         self._controller.set_mode(self._mode_key, True)
+        if self._mode_key == "start_stop":
+            try:
+                if await async_get_priority_mode_enabled(self.hass):
+                    await async_align_current_with_order(self.hass)
+            except Exception:
+                pass
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._controller.set_mode(self._mode_key, False)
+        if self._mode_key == "start_stop":
+            try:
+                await self._controller._ensure_charging_enable_off()
+            except Exception:
+                pass
+            try:
+                if await async_get_priority_mode_enabled(self.hass):
+                    current = await async_get_priority(self.hass)
+                    if current == self._entry_id:
+                        await async_advance_priority_to_next(self.hass, self._entry_id)
+                    else:
+                        await async_align_current_with_order(self.hass)
+            except Exception:
+                pass
         self.async_write_ha_state()
 
     @property
