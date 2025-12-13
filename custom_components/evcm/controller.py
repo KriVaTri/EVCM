@@ -1079,7 +1079,7 @@ class EVLoadController:
                     self._report_unknown(self._charging_enable_entity, getattr(old, "state", None), "charging_enable_transition", side="old")
             return
         if not self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._ensure_charging_enable_off())
+            self.hass.async_create_task(self._enforce_start_stop_policy())
             return
         self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
@@ -2124,6 +2124,19 @@ class EVLoadController:
                 self._schedule_relock_after_charging_start()
 
     async def _enforce_start_stop_policy(self):
+        try:
+            if not self.get_mode("start_stop"):
+                await self._ensure_charging_enable_off()
+                self._reset_timers()
+                self._charging_active = False
+                return
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self._ensure_charging_enable_off()
+            self._reset_timers()
+            self._charging_active = False
+            return
+
         if not self.get_mode(MODE_START_STOP):
             self._cancel_auto_connect_task()
             self._stop_regulation_loop()
