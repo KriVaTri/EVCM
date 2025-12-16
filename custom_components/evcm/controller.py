@@ -1079,6 +1079,7 @@ class EVLoadController:
                     self._report_unknown(self._charging_enable_entity, getattr(old, "state", None), "charging_enable_transition", side="old")
             return
         if not self.get_mode(MODE_START_STOP):
+            self.hass.async_create_task(self._ensure_charging_enable_off())
             self.hass.async_create_task(self._enforce_start_stop_policy())
             return
         self.hass.async_create_task(self._hysteresis_apply())
@@ -2165,29 +2166,19 @@ class EVLoadController:
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
+                    self.hass.async_create_task(self._ensure_charging_enable_off())
                     self.hass.async_create_task(self._enforce_start_stop_policy())
                     self.hass.async_create_task(self._advance_if_current())
+                    return
                 if enabled and previous is False:
-                    if self._priority_mode_enabled:
-                        self.hass.async_create_task(async_align_current_with_order(self.hass))
-                    if self.get_mode(MODE_MANUAL_AUTO):
-                        async def _after_enable_manual():
-                            if (
-                                self._is_cable_connected() and self._essential_data_available()
-                                and self._planner_window_allows_start() and self._soc_allows_start()
-                                and self._priority_allowed_cache
-                            ):
-                                if self._priority_mode_enabled and not (await self._have_priority_now()):
-                                    return
-                                await self._start_charging_and_reclaim()
-                            else:
-                                await self._ensure_charging_enable_off()
-                            self._stop_regulation_loop()
-                            self._stop_resume_monitor()
-                        self.hass.async_create_task(_after_enable_manual())
-                    self.hass.async_create_task(self._hysteresis_apply())
-                    self._start_regulation_loop_if_needed()
-                return
+                    async def _after_enable_startstop_on():
+                        if self._priority_mode_enabled:
+                            await async_align_current_with_order(self.hass)
+                        await self._hysteresis_apply()
+                        self._start_regulation_loop_if_needed()
+                        self._start_resume_monitor_if_needed()
+                    self.hass.async_create_task(_after_enable_startstop_on())
+                    return
 
             if mode == MODE_ECO:
                 if previous != enabled and not self.get_mode(MODE_MANUAL_AUTO):
