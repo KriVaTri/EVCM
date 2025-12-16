@@ -36,13 +36,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     new_entities: list[SwitchEntity] = []
 
+    # Per-entry proxy for global priority mode
     base = _base_name(entry)
     prio_obj_id = slugify(f"evcm {base} Priority Charging")
     new_entities.append(PriorityChargingSwitchPerEntry(hass, entry.entry_id, friendly_name=f"{base} Priority Charging", object_id=prio_obj_id))
 
+    # Auto unlock switch
     auto_unlock_obj_id = slugify(f"evcm {base} Auto unlock")
     new_entities.append(_AutoUnlockSwitch(controller, entry.entry_id, friendly_name=f"{base} Auto unlock", object_id=auto_unlock_obj_id))
 
+    # Mode switches
     for mode_key in MODES:
         label = MODE_LABELS.get(mode_key, mode_key)
         friendly_name = f"{base} {label}"
@@ -218,10 +221,12 @@ class _ModeSwitch(SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._controller.set_mode(self._mode_key, False)
         if self._mode_key == "start_stop":
+            # Immediate, unconditional OFF for charging enable on user toggle
             try:
                 await self._controller._ensure_charging_enable_off()
             except Exception:
                 pass
+            # Priority: advance or align so another entry can take over
             try:
                 if await async_get_priority_mode_enabled(self.hass):
                     current = await async_get_priority(self.hass)
