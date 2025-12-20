@@ -98,6 +98,7 @@ class _PlannerDateTime(DateTimeEntity):
 
     @property
     def native_value(self) -> Optional[datetime]:
+        # Correct: read properties/fields, do NOT call
         return (
             self._controller.planner_start_dt
             if self._is_start
