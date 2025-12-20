@@ -225,6 +225,17 @@ class EVLoadController:
         # Startup listener unsub handle
         self._started_unsub: Optional[Callable[[], None]] = None
 
+        # Startup guards
+        self._post_start_done: bool = False
+        self._startup_ts: datetime = dt_util.utcnow()
+
+    # ---------------- Startup grace helper ----------------
+    def _is_startup_grace_active(self) -> bool:
+        try:
+            return (dt_util.utcnow() - self._startup_ts).total_seconds() < UNKNOWN_STARTUP_GRACE_SECONDS
+        except Exception:
+            return True
+
     # ---------------- Upper debounce helpers ----------------
     def _upper_debounce_seconds(self) -> int:
         eff = _effective_config(self.entry)
@@ -294,8 +305,29 @@ class EVLoadController:
 
     # ---------------- Post-start lock enforce (non-blocking wrapper) ----------------
     async def async_post_start(self):
-        # Return immediately; run logic in background
-        self.hass.async_create_task(self._async_post_start_inner())
+        """Run post-start routine once; avoid blocking HA startup."""
+        if self._post_start_done:
+            _LOGGER.debug("Post-start already executed; skipping for entry_id=%s", self.entry.entry_id)
+            return
+        self._post_start_done = True
+
+        # Run inner in background (never block HA startup)
+        try:
+            self.hass.async_create_task(self._async_post_start_inner())
+        except Exception:
+            _LOGGER.debug("Failed to schedule _async_post_start_inner", exc_info=True)
+
+        # Defer lock enforcement to avoid immediate I/O on startup
+        def _schedule_lock_enforce():
+            try:
+                self.hass.async_create_task(self._ensure_lock_locked())
+            except Exception:
+                _LOGGER.debug("Failed to schedule _ensure_lock_locked", exc_info=True)
+
+        try:
+            self.hass.loop.call_later(5.0, _schedule_lock_enforce)
+        except Exception:
+            _schedule_lock_enforce()
 
     async def _async_post_start_inner(self):
         if not self._lock_entity:
@@ -323,19 +355,22 @@ class EVLoadController:
 
     # ---------------- Midnight planner date rollover ----------------
     def _install_midnight_daily_listener(self):
+        """Install exactly one midnight listener; avoid duplicates."""
         if self._midnight_unsub:
-            with contextlib.suppress(Exception):
-                self._midnight_unsub()
-            self._midnight_unsub = None
+            _LOGGER.debug("Midnight daily listener already installed; skipping duplicate")
+            return
 
-        self._midnight_unsub = async_track_time_change(
-            self.hass,
-            self._midnight_time_change_callback,
-            hour=0,
-            minute=0,
-            second=0,
-        )
-        _LOGGER.info("Midnight daily listener installed (local 00:00:00)")
+        try:
+            self._midnight_unsub = async_track_time_change(
+                self.hass,
+                self._midnight_time_change_callback,
+                hour=0,
+                minute=0,
+                second=0,
+            )
+            _LOGGER.info("Midnight daily listener installed (local 00:00:00)")
+        except Exception:
+            _LOGGER.debug("Failed to install midnight listener", exc_info=True)
 
     async def _midnight_time_change_callback(self, now: datetime):
         try:
@@ -952,6 +987,8 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 self._started_unsub()
             self._started_unsub = None
+        # Reset post-start guard for any future reloads
+        self._post_start_done = False
 
     # ---------------- Subscriptions ----------------
     def _subscribe_listeners(self):
@@ -1495,6 +1532,10 @@ class EVLoadController:
         return self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
 
     async def _hysteresis_apply(self, preserve_current: bool = False):
+        # Skip hysteresis during initial startup grace to avoid blocking HA bootstrap
+        if self._is_startup_grace_active():
+            return
+
         if not self.get_mode(MODE_START_STOP):
             self._reset_timers()
             await self._ensure_charging_enable_off()
@@ -1719,6 +1760,9 @@ class EVLoadController:
         self._no_data_task = self.hass.async_create_task(_runner())
 
     def _conditions_for_timers(self) -> bool:
+        # Timers should not run during the startup grace period
+        if self._is_startup_grace_active():
+            return False
         return (
             not self.get_mode(MODE_MANUAL_AUTO)
             and self.get_mode(MODE_START_STOP)
@@ -1804,6 +1848,9 @@ class EVLoadController:
 
     # ---------------- Regulation loop ----------------
     def _start_regulation_loop_if_needed(self):
+        # Do not start regulation loop during startup grace
+        if self._is_startup_grace_active():
+            return
         if self._regulation_task and not self._regulation_task.done():
             return
         if not self._should_regulate():
@@ -2125,6 +2172,20 @@ class EVLoadController:
                 self._schedule_relock_after_charging_start()
 
     async def _enforce_start_stop_policy(self):
+        """Apply start/stop policy. Skip during startup grace to avoid blocking HA startup."""
+        if self._is_startup_grace_active():
+            def _reschedule():
+                try:
+                    self.hass.async_create_task(self._enforce_start_stop_policy())
+                except Exception:
+                    _LOGGER.debug("Failed to reschedule _enforce_start_stop_policy", exc_info=True)
+            try:
+                remaining = max(1.0, min(30.0, UNKNOWN_STARTUP_GRACE_SECONDS))
+                self.hass.loop.call_later(remaining, _reschedule)
+            except Exception:
+                _reschedule()
+            return
+
         try:
             if not self.get_mode("start_stop"):
                 await self._ensure_charging_enable_off()
