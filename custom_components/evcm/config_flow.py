@@ -185,7 +185,7 @@ def _build_sensors_schema(
 
     fields: dict = {}
 
-    # Grid sensors: nooit filteren op wallbox device
+    # Grid sensors
     if grid_single:
         fields[vol.Required(CONF_GRID_POWER, default=defaults.get(CONF_GRID_POWER, ""))] = selector(
             {"entity": {"domain": "sensor"}}
@@ -201,18 +201,16 @@ def _build_sensors_schema(
     def add_ent(key: str, domain: str, filterable: bool = True):
         ent_selector: Dict = {"entity": {}}
         if selected_device and filterable and (filter_keys is None or key in filter_keys):
-            # Haal entiteiten van het gekozen device en dit domein op
             candidates = _find_device_candidates(hass, selected_device, domain)
             if candidates:
                 ent_selector["entity"]["include_entities"] = candidates
             else:
-                # Geen kandidaten → fallback op domeinselectie
                 ent_selector["entity"]["domain"] = domain
         else:
             ent_selector["entity"]["domain"] = domain
         fields[vol.Required(key, default=defaults.get(key, ""))] = selector(ent_selector)
 
-    # Wallbox-gerelateerde entiteiten (gefilterd via include_entities indien device gekozen)
+    # Wallbox-related entities
     add_ent(CONF_CHARGE_POWER, "sensor", filterable=True)
     add_ent(CONF_WALLBOX_STATUS, "sensor", filterable=True)
     add_ent(CONF_CABLE_CONNECTED, "binary_sensor", filterable=True)
@@ -220,7 +218,7 @@ def _build_sensors_schema(
     add_ent(CONF_LOCK_SENSOR, "lock", filterable=True)
     add_ent(CONF_CURRENT_SETTING, "number", filterable=True)
 
-    # EV SOC: kan van andere integratie/device komen → niet filteren
+    # EV SOC
     evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL, "")
     if evsoc_default:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL, default=evsoc_default)] = selector(
@@ -229,16 +227,16 @@ def _build_sensors_schema(
     else:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL)] = selector({"entity": {"domain": "sensor"}})
 
-    # Overige controls
+    # Other controls
     fields[vol.Required(CONF_MAX_CURRENT_LIMIT_A, default=defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))] = selector(num_sel_a)
 
-    # Drempels
+    # Thresholds
     fields[vol.Required(CONF_ECO_ON_UPPER, default=defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_ON_LOWER, default=defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_UPPER, default=defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
-    # Timers en intervallen
+    # Timers and intervals
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
             "number": {
