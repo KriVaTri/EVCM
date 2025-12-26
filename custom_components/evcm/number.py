@@ -202,7 +202,6 @@ class _NetPowerTargetNumber(NumberEntity):
 
     @property
     def native_value(self) -> Optional[float]:
-        # Correct: read property/field, do NOT call
         return int(self._controller.net_power_target_w)
 
     async def async_set_native_value(self, value: float) -> None:
