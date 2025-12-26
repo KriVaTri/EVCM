@@ -224,6 +224,8 @@ class EVLoadController:
         self._midnight_unsub: Optional[Callable[[], None]] = None
         # Startup listener unsub handle
         self._started_unsub: Optional[Callable[[], None]] = None
+        # Track whether the started-listener is still active to avoid double removal on reload
+        self._ha_started_listener_active: bool = False
 
         # Startup guards
         self._post_start_done: bool = False
@@ -949,14 +951,19 @@ class EVLoadController:
 
         # Defer any service calls and monitors until HA has started
         if self.hass.is_running:
-            # During reload after startup
+            self._ha_started_listener_active = False
+            self._started_unsub = None
             await self._on_ha_started(None)
         else:
             self._started_unsub = self.hass.bus.async_listen_once(
                 EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
             )
+            self._ha_started_listener_active = True
 
     async def _on_ha_started(self, _event):
+        self._ha_started_listener_active = False
+        self._started_unsub = None
+
         # Install midnight listener and start monitors after HA is running
         self._install_midnight_daily_listener()
         # Schedule potentially blocking routines
@@ -983,11 +990,13 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 self._midnight_unsub()
             self._midnight_unsub = None
+
         if self._started_unsub:
             with contextlib.suppress(Exception):
-                self._started_unsub()
+                if self._ha_started_listener_active:
+                    self._started_unsub()
             self._started_unsub = None
-        # Reset post-start guard for any future reloads
+        self._ha_started_listener_active = False
         self._post_start_done = False
 
     # ---------------- Subscriptions ----------------
@@ -1108,6 +1117,12 @@ class EVLoadController:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         self.hass.async_create_task(self._refresh_priority_mode_flag())
+
+        if not self.get_mode(MODE_START_STOP):
+            self.hass.async_create_task(self._ensure_charging_enable_off())
+            self.hass.async_create_task(self._enforce_start_stop_policy())
+            return
+
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(self._charging_enable_entity, getattr(new, "state", None), "charging_enable_transition", side="new")
@@ -1115,10 +1130,7 @@ class EVLoadController:
                 if self._should_report_unknown("charging_enable_transition", side="old"):
                     self._report_unknown(self._charging_enable_entity, getattr(old, "state", None), "charging_enable_transition", side="old")
             return
-        if not self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._ensure_charging_enable_off())
-            self.hass.async_create_task(self._enforce_start_stop_policy())
-            return
+
         self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
         if self._is_charging_enabled() and not self.get_mode(MODE_MANUAL_AUTO) and self._is_cable_connected():
@@ -1146,6 +1158,12 @@ class EVLoadController:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         self.hass.async_create_task(self._refresh_priority_mode_flag())
+
+        if not self.get_mode(MODE_START_STOP):
+            self.hass.async_create_task(self._ensure_charging_enable_off())
+            self.hass.async_create_task(self._enforce_start_stop_policy())
+            return
+
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(self._wallbox_status_entity, getattr(new, "state", None), "status_transition", side="new")
@@ -1169,6 +1187,12 @@ class EVLoadController:
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         self.hass.async_create_task(self._refresh_priority_mode_flag())
+
+        if not self.get_mode(MODE_START_STOP):
+            self.hass.async_create_task(self._ensure_charging_enable_off())
+            self.hass.async_create_task(self._enforce_start_stop_policy())
+            return
+
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(self._charge_power_entity, getattr(new, "state", None), "charge_power_transition", side="new")
@@ -1181,6 +1205,7 @@ class EVLoadController:
             pw = float(new.state)
         except Exception:
             pw = None
+
         if self._is_cable_connected() and (pw is not None and pw > 100):
             if not self._relock_task:
                 _LOGGER.debug("Power>100W detected → scheduling relock watcher (direct)")
@@ -1264,11 +1289,17 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 dom, _ = self._current_setting_entity.split(".", 1)
                 if dom == "number":
-                    await self.hass.services.async_call(
-                        "number", "set_value",
-                        {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
-                        blocking=True
+                    should_set_min = (
+                        not self.get_mode(MODE_START_STOP)
+                        or self.get_mode(MODE_MANUAL_AUTO)
+                        or not self._charging_detected_now()
                     )
+                    if should_set_min:
+                        await self.hass.services.async_call(
+                            "number", "set_value",
+                            {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
+                            blocking=True
+                        )
 
         # Priority preemption chain
         try:
@@ -2229,6 +2260,16 @@ class EVLoadController:
                 if not enabled and previous:
                     self.hass.async_create_task(self._ensure_charging_enable_off())
                     self.hass.async_create_task(self._enforce_start_stop_policy())
+                    async def _verify_enable_off_later():
+                        try:
+                            await asyncio.sleep(1.0)
+                            st = self.hass.states.get(self._charging_enable_entity)
+                            if (not self.get_mode(MODE_START_STOP)) and (not self._is_known_state(st) or st.state != STATE_OFF):
+                                await self._ensure_charging_enable_off()
+                        except Exception:
+                            pass
+                    self.hass.async_create_task(_verify_enable_off_later())
+
                     self.hass.async_create_task(self._advance_if_current())
                     return
                 if enabled and previous is False:
