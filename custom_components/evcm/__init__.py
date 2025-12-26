@@ -14,6 +14,7 @@ from .const import (
     CONF_PLANNER_START_ISO,
     CONF_PLANNER_STOP_ISO,
     CONF_SOC_LIMIT_PERCENT,
+    CONF_NET_POWER_TARGET_W,
 )
 from .priority import async_cleanup_priority_if_removed
 
@@ -21,11 +22,13 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
+# Ignore runtime persistence keys so options changes for these do NOT trigger reloads
 IGNORED_OPTION_KEYS = {
     CONF_OPT_MODE_ECO,
     CONF_PLANNER_START_ISO,
     CONF_PLANNER_STOP_ISO,
     CONF_SOC_LIMIT_PERCENT,
+    CONF_NET_POWER_TARGET_W,
 }
 
 
@@ -51,7 +54,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "last_options": dict(entry.options),
             "post_start_scheduled": False,
         }
-        # Don't block HA startup on failure of one entry
         return False
 
     hass.data[DOMAIN][entry.entry_id] = {
@@ -60,20 +62,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "post_start_scheduled": False,
     }
 
-    # Initialize controller in the background to avoid blocking HA startup
-    init_task = hass.async_create_task(controller.async_initialize())
+    # IMPORTANT: await controller initialization BEFORE forwarding platforms
+    # This ensures persisted state is loaded so entities won't fall back to defaults on first reload.
+    try:
+        await controller.async_initialize()
+        _LOGGER.debug("Controller initialization completed for entry_id=%s", entry.entry_id)
+    except Exception as exc:
+        _LOGGER.error("Controller initialization failed for %s: %s", DOMAIN, exc, exc_info=True)
+        # Attempt clean shutdown of controller if it partially initialized
+        with contextlib.suppress(Exception):
+            await controller.async_shutdown()
+        return False
 
-    def _log_init_result(task):
+    # Forward platforms after controller is initialized
+    try:
+        _LOGGER.debug("Forwarding platforms for entry_id=%s: %s", entry.entry_id, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        _LOGGER.debug("Platform forward completed for entry_id=%s", entry.entry_id)
+    except Exception as exc:
+        _LOGGER.error("Platform forward failed: %s", exc, exc_info=True)
         try:
-            task.result()
-            _LOGGER.debug("Controller initialization completed for entry_id=%s", entry.entry_id)
-        except Exception as exc:
-            _LOGGER.error("Controller initialization failed for %s: %s", DOMAIN, exc, exc_info=True)
+            await controller.async_shutdown()
+        except Exception:
+            pass
+        return False
 
-    init_task.add_done_callback(_log_init_result)
-
-    # Post-start hook: must schedule exactly once per entry in a thread-safe way.
-    # hass.add_job is safe from any context; @callback ensures listener runs in loop.
+    # Post-start hook: schedule exactly once per entry.
     entry_data = hass.data[DOMAIN][entry.entry_id]
     if not entry_data.get("post_start_scheduled"):
         entry_data["post_start_scheduled"] = True
@@ -89,18 +103,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         _LOGGER.debug("Post-start already scheduled; skipping duplicate for entry_id=%s", entry.entry_id)
 
-    try:
-        _LOGGER.debug("Forwarding platforms for entry_id=%s: %s", entry.entry_id, PLATFORMS)
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        _LOGGER.debug("Platform forward completed for entry_id=%s", entry.entry_id)
-    except Exception as exc:
-        _LOGGER.error("Platform forward failed: %s", exc, exc_info=True)
-        try:
-            await controller.async_shutdown()
-        except Exception:
-            pass
-        return False
-
+    # Register update listener after platforms are ready
     entry.async_on_unload(entry.add_update_listener(_update_listener))
 
     await async_cleanup_priority_if_removed(hass)
