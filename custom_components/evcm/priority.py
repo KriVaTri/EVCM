@@ -131,8 +131,8 @@ async def async_set_priority(hass: HomeAssistant, entry_id: Optional[str]) -> No
         data["preferred_priority_entry_id"] = valid
     await _save_raw(hass, data)
     _LOGGER.info("Priority set (current=%s, preferred=%s)",
-                 _name_for(hass, data.get("priority_entry_id")),
-                 _name_for(hass, data.get("preferred_priority_entry_id")))
+                _name_for(hass, data.get("priority_entry_id")),
+                _name_for(hass, data.get("preferred_priority_entry_id")))
     _notify_all_priority_change(hass)
 
 
@@ -248,8 +248,8 @@ async def async_set_order(hass: HomeAssistant, order: List[str]) -> None:
     data["preferred_priority_entry_id"] = top if isinstance(top, str) else None
     await _save_raw(hass, data)
     _LOGGER.debug("Priority order updated: %s (preferred=%s)",
-                  [_name_for(hass, e) for e in order],
-                  _name_for(hass, top) if top else None)
+                [_name_for(hass, e) for e in order],
+                _name_for(hass, top) if top else None)
     try:
         hass.bus.async_fire("evcm_priority_refresh")
     except Exception:
@@ -340,8 +340,8 @@ async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: 
         cand_id = order[(idx + step) % n]
         if _is_entry_eligible(hass, cand_id):
             _LOGGER.info("Priority advanced from %s to %s",
-                         _name_for(hass, current_entry_id),
-                         _name_for(hass, cand_id))
+                        _name_for(hass, current_entry_id),
+                        _name_for(hass, cand_id))
             await _set_priority_value(hass, cand_id)
             return
     exclude = current_entry_id if _is_paused(hass, current_entry_id) else None
@@ -352,7 +352,7 @@ async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: 
         return
     if not _is_paused(hass, current_entry_id):
         _LOGGER.info("No eligible next; retain current %s (not paused)",
-                     _name_for(hass, current_entry_id))
+                    _name_for(hass, current_entry_id))
         return
     _LOGGER.info("No eligible/unpaused next; clearing priority")
     await _set_priority_value(hass, None)
