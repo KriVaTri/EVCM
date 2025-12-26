@@ -140,6 +140,7 @@ FILTERABLE_KEYS = set(KEY_DOMAIN_MAP.keys())
 
 
 def _build_sensors_schema(
+    hass,
     grid_single: bool,
     defaults: dict,
     selected_device: Optional[str] = None,
@@ -184,7 +185,7 @@ def _build_sensors_schema(
 
     fields: dict = {}
 
-    # Grid sensors should NOT be filtered by wallbox device (they often live on the energy meter)
+    # Grid sensors: nooit filteren op wallbox device
     if grid_single:
         fields[vol.Required(CONF_GRID_POWER, default=defaults.get(CONF_GRID_POWER, ""))] = selector(
             {"entity": {"domain": "sensor"}}
@@ -198,12 +199,20 @@ def _build_sensors_schema(
         )
 
     def add_ent(key: str, domain: str, filterable: bool = True):
-        ent_selector: Dict = {"entity": {"domain": domain}}
+        ent_selector: Dict = {"entity": {}}
         if selected_device and filterable and (filter_keys is None or key in filter_keys):
-            ent_selector["entity"]["device"] = selected_device
+            # Haal entiteiten van het gekozen device en dit domein op
+            candidates = _find_device_candidates(hass, selected_device, domain)
+            if candidates:
+                ent_selector["entity"]["include_entities"] = candidates
+            else:
+                # Geen kandidaten → fallback op domeinselectie
+                ent_selector["entity"]["domain"] = domain
+        else:
+            ent_selector["entity"]["domain"] = domain
         fields[vol.Required(key, default=defaults.get(key, ""))] = selector(ent_selector)
 
-    # Wallbox-related (filtered if device selected)
+    # Wallbox-gerelateerde entiteiten (gefilterd via include_entities indien device gekozen)
     add_ent(CONF_CHARGE_POWER, "sensor", filterable=True)
     add_ent(CONF_WALLBOX_STATUS, "sensor", filterable=True)
     add_ent(CONF_CABLE_CONNECTED, "binary_sensor", filterable=True)
@@ -211,7 +220,7 @@ def _build_sensors_schema(
     add_ent(CONF_LOCK_SENSOR, "lock", filterable=True)
     add_ent(CONF_CURRENT_SETTING, "number", filterable=True)
 
-    # EV SOC may be from a different integration/device → do NOT filter by selected device
+    # EV SOC: kan van andere integratie/device komen → niet filteren
     evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL, "")
     if evsoc_default:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL, default=evsoc_default)] = selector(
@@ -220,16 +229,16 @@ def _build_sensors_schema(
     else:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL)] = selector({"entity": {"domain": "sensor"}})
 
-    # Other controls
+    # Overige controls
     fields[vol.Required(CONF_MAX_CURRENT_LIMIT_A, default=defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))] = selector(num_sel_a)
 
-    # Thresholds
+    # Drempels
     fields[vol.Required(CONF_ECO_ON_UPPER, default=defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_ON_LOWER, default=defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_UPPER, default=defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
-    # Timers and intervals
+    # Timers en intervallen
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
             "number": {
@@ -241,7 +250,6 @@ def _build_sensors_schema(
             }
         }
     )
-    # Place upper debounce directly under scan interval
     fields[vol.Required(CONF_UPPER_DEBOUNCE_SECONDS, default=defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))] = selector(num_sel_upper_debounce)
     fields[vol.Required(CONF_SUSTAIN_SECONDS, default=defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))] = selector(num_sel_s)
 
@@ -461,7 +469,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is None:
             try:
-                schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -469,7 +477,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(grid_single, self._s_defaults, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS)
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -651,12 +659,12 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(grid_single, self._values, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS)
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
 
