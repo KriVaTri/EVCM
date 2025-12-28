@@ -155,6 +155,26 @@ Optional:
 
 When these entities are present and correctly mapped during setup, EVCM’s automation, gating, and regulation features work across a broad range of EVSE brands.
 
+EVCM was primarily developed and tested with **local, low‑latency control** (e.g. MQTT on the LAN, typically sub‑second end‑to‑end).
+
+If your charger is controlled through a **high‑latency and/or rate‑limited path** (e.g. a cloud API), you may experience:
+- slower response to changing conditions (export/import),
+- less accurate regulation,
+- repeated commands because state updates arrive late,
+- on/off “chatter” if the platform reports state with delay.
+
+**Recommendation:** prefer local control when possible. If you must use a cloud integration, manually increase debounce/cooldown timings in the code to match your setup’s typical end‑to‑end delay.
+
+If your charger integration has 5s end‑to‑end delay (command → effect/state visible), consider using more conservative timings to avoid repeated commands or on/off “chatter”.
+
+- Adjustable in the integration options (UI):
+  - Upper start debounce (s): 6s (instead of the default 3s)
+- Currently only adjustable in code (custom_components/evcm/controller.py):
+  - CONNECT_DEBOUNCE_SECONDS: 5s
+  - EXPORT_SUSTAIN_SECONDS: 10s
+  - PLANNER_MONITOR_INTERVAL: 3s
+  - CE_MIN_TOGGLE_INTERVAL_S: 10s
+
 ---
 
 ## Supply Profiles and Net Power Target
