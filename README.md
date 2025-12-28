@@ -62,15 +62,7 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 
 **Recommendation:** prefer local control when possible. If you must use a cloud integration, manually increase debounce/cooldown timings in the code to match your setup’s typical end‑to‑end delay.
 
-If your charger integration has 5s end‑to‑end delay (command → effect/state visible), consider using more conservative timings to avoid repeated commands or on/off “chatter”.
-
-- Adjustable in the integration options (UI):
-  - Upper start debounce (s): 6s (instead of the default 3s)
-- Currently only adjustable in code (custom_components/evcm/controller.py):
-  - CONNECT_DEBOUNCE_SECONDS: 5s
-  - EXPORT_SUSTAIN_SECONDS: 10s
-  - PLANNER_MONITOR_INTERVAL: 3s
-  - CE_MIN_TOGGLE_INTERVAL_S: 10s
+for further details and workaround: [docs/README.md](docs/README.md)
     
 ---
 
