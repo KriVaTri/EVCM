@@ -106,6 +106,7 @@ OPT_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
 DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
 UPPER_DEBOUNCE_MIN_SECONDS = 0
 UPPER_DEBOUNCE_MAX_SECONDS = 60
+CE_MIN_TOGGLE_INTERVAL_S = 0.5
 
 
 def _effective_config(entry: ConfigEntry) -> dict:
@@ -220,6 +221,11 @@ class EVLoadController:
         # Auto-unlock toggle
         self._auto_unlock_enabled: bool = True
 
+        # ---- charging_enable single-writer (minimal) ----
+        self._ce_lock: asyncio.Lock = asyncio.Lock()
+        self._ce_last_desired: Optional[bool] = None
+        self._ce_last_write_ts: float = 0.0
+
         # Time-change unsubscribe handle
         self._midnight_unsub: Optional[Callable[[], None]] = None
         # Startup listener unsub handle
@@ -231,12 +237,58 @@ class EVLoadController:
         self._post_start_done: bool = False
         self._startup_ts: datetime = dt_util.utcnow()
 
+        # Startup grace reconcile timer
+        self._startup_grace_recheck_handle: Optional[asyncio.Handle] = None
+
     # ---------------- Startup grace helper ----------------
     def _is_startup_grace_active(self) -> bool:
         try:
             return (dt_util.utcnow() - self._startup_ts).total_seconds() < UNKNOWN_STARTUP_GRACE_SECONDS
         except Exception:
             return True
+            
+    def _schedule_startup_grace_recheck(self) -> None:
+        # schedule exactly once
+        if self._startup_grace_recheck_handle is not None:
+            return
+
+        def _cb():
+            self._startup_grace_recheck_handle = None
+            # run async reconcile in background
+            self.hass.async_create_task(self._after_startup_grace_reconcile())
+
+        try:
+            delay = float(UNKNOWN_STARTUP_GRACE_SECONDS) + 0.5
+            self._startup_grace_recheck_handle = self.hass.loop.call_later(delay, _cb)
+        except Exception:
+            # fallback: run soon
+            self.hass.async_create_task(self._after_startup_grace_reconcile())
+
+
+    async def _after_startup_grace_reconcile(self) -> None:
+        """Run once after startup grace ends to avoid missing planner/export/SoC transitions."""
+        try:
+            # If grace is somehow still active, skip (another call will happen via enforce reschedule)
+            if self._is_startup_grace_active():
+                return
+
+            _LOGGER.info("Startup grace ended → reconciling state (planner/hysteresis/regulation)")
+
+            # Apply current realities
+            await self._enforce_start_stop_policy()
+            await self._apply_cable_state_initial()
+            await self._hysteresis_apply()
+
+            # Ensure loops are started if needed
+            if self._priority_allowed_cache:
+                self._start_regulation_loop_if_needed()
+                self._start_resume_monitor_if_needed()
+
+            # Re-evaluate missing-data timers (they were disabled during grace)
+            self._evaluate_missing_and_start_no_data_timer()
+
+        except Exception:
+            _LOGGER.debug("Startup grace reconcile failed", exc_info=True)
 
     # ---------------- Upper debounce helpers ----------------
     def _upper_debounce_seconds(self) -> int:
@@ -336,7 +388,7 @@ class EVLoadController:
             self._install_midnight_daily_listener()
             return
         try:
-            deadline = time.monotonic() + 30.0
+            deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 if self._cable_entity:
                     st_cable = self.hass.states.get(self._cable_entity)
@@ -974,6 +1026,7 @@ class EVLoadController:
             self._start_regulation_loop_if_needed()
             self._start_resume_monitor_if_needed()
         self._evaluate_missing_and_start_no_data_timer()
+        self._schedule_startup_grace_recheck()
 
     async def async_shutdown(self):
         self._cancel_auto_connect_task()
@@ -998,6 +1051,11 @@ class EVLoadController:
             self._started_unsub = None
         self._ha_started_listener_active = False
         self._post_start_done = False
+
+        if self._startup_grace_recheck_handle is not None:
+            with contextlib.suppress(Exception):
+                self._startup_grace_recheck_handle.cancel()
+            self._startup_grace_recheck_handle = None
 
     # ---------------- Subscriptions ----------------
     def _subscribe_listeners(self):
@@ -1536,8 +1594,9 @@ class EVLoadController:
             while self._planner_enabled():
                 allows = self._planner_window_allows_start()
                 if self.get_mode(MODE_START_STOP):
-                    if not allows:
-                        if self._charging_active:
+                    if previous_allows is not False and not allows:
+                        # Only act on transition into "not allowed" to avoid spamming pause every second
+                        if self._charging_active or self._is_charging_enabled() or self._charging_detected_now():
                             _LOGGER.info("Planner monitor: window ended/invalid → pause.")
                             await self._pause_basic(set_current_to_min=True)
                             await self._advance_if_current()
@@ -1593,6 +1652,14 @@ class EVLoadController:
                 await self._advance_if_current()
             return
 
+        # NEW: treat "enabled" or "detected charging" as active too
+        is_effectively_active = (
+            self._charging_active
+            or self._is_charging_enabled()
+            or self._charging_detected_now()
+        )
+
+        manual_enabled = self._is_charging_enabled()
         planner_ok = self._planner_window_allows_start()
         soc_ok = self._soc_allows_start()
         priority_ok = self._priority_allowed_cache
@@ -1606,7 +1673,8 @@ class EVLoadController:
                     reasons.append("soc")
                 if not priority_ok:
                     reasons.append("priority")
-                if self._charging_active:
+
+                if manual_enabled or self._charging_active:
                     _LOGGER.info("Manual pause: %s", "/".join(reasons))
                     await self._pause_basic(set_current_to_min=not preserve_current)
                     if self._priority_mode_enabled and (not planner_ok or not soc_ok):
@@ -1616,7 +1684,8 @@ class EVLoadController:
                         await self._advance_if_current()
                 return
 
-            if not self._charging_active:
+            # allowed in manual
+            if not manual_enabled:
                 if self._priority_mode_enabled and not await self._have_priority_now():
                     self._start_resume_monitor_if_needed()
                     return
@@ -1627,7 +1696,7 @@ class EVLoadController:
             return
 
         if not planner_ok:
-            if self._charging_active:
+            if is_effectively_active:
                 _LOGGER.info("Planner window inactive → pause.")
                 await self._pause_basic(set_current_to_min=not preserve_current)
                 if self._priority_mode_enabled:
@@ -1641,7 +1710,7 @@ class EVLoadController:
             return
 
         if not soc_ok:
-            if self._charging_active:
+            if is_effectively_active:
                 _LOGGER.info("SoC limit reached → pause.")
                 await self._pause_basic(set_current_to_min=not preserve_current)
                 if self._priority_mode_enabled:
@@ -1655,7 +1724,7 @@ class EVLoadController:
             return
 
         if not priority_ok:
-            if self._charging_active:
+            if is_effectively_active:
                 await self._pause_basic(set_current_to_min=not preserve_current)
             self._start_resume_monitor_if_needed()
             self._evaluate_missing_and_start_no_data_timer()
@@ -2052,6 +2121,59 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Resume loop error: %s", exc)
 
+    async def _ce_write(self, desired_on: bool, *, reason: str = "") -> None:
+        """
+        Single-writer for charging_enable:
+        - serializes turn_on/turn_off to avoid concurrent flapping
+        - deduplicates repeated requests
+        - hard veto: never turn ON if Start/Stop is OFF
+        """
+        if not self._charging_enable_entity:
+            return
+
+        async with self._ce_lock:
+            # Hard veto: if Start/Stop is OFF, never send ON
+            if desired_on and not self.get_mode(MODE_START_STOP):
+                _LOGGER.debug("CE veto ON (start_stop off) reason=%s", reason)
+                return
+
+            dom, _ = self._charging_enable_entity.split(".", 1)
+            if dom != "switch":
+                return
+
+            # Minimal dampener: suppress very fast duplicate ON writes
+            now = time.monotonic()
+            if desired_on and (now - self._ce_last_write_ts) < CE_MIN_TOGGLE_INTERVAL_S:
+                # allow OFF always; suppress only rapid ON spam
+                _LOGGER.debug("CE suppress ON (min interval) reason=%s", reason)
+                return
+
+            # Internal dedup (prevents spam even if HA state hasn't caught up yet)
+            if self._ce_last_desired is not None and self._ce_last_desired == desired_on:
+                return
+
+            # State-based dedup (prevents unnecessary service calls)
+            st = self.hass.states.get(self._charging_enable_entity)
+            if self._is_known_state(st):
+                if desired_on and st.state == STATE_ON:
+                    self._ce_last_desired = True
+                    return
+                if (not desired_on) and st.state == STATE_OFF:
+                    self._ce_last_desired = False
+                    return
+            else:
+                self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "charging_enable_ce_write_get")
+
+            svc = "turn_on" if desired_on else "turn_off"
+            try:
+                await self.hass.services.async_call("switch", svc, {"entity_id": self._charging_enable_entity}, blocking=True)
+                self._ce_last_desired = desired_on
+            finally:
+                self._ce_last_write_ts = time.monotonic()
+
+            if not desired_on:
+                self._cancel_relock_task()
+
     # ---------------- Sensor getters / setters ----------------
     def _get_wallbox_status(self) -> Optional[str]:
         if not self._wallbox_status_entity:
@@ -2138,15 +2260,12 @@ class EVLoadController:
         if not self._charging_enable_entity:
             return
         with contextlib.suppress(Exception):
-            dom, _ = self._charging_enable_entity.split(".", 1)
-            if dom != "switch":
-                return
             st = self.hass.states.get(self._charging_enable_entity)
             if self._is_known_state(st) and st.state == STATE_OFF:
                 return
             if not self._is_known_state(st):
                 self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_off")
-            await self.hass.services.async_call("switch", "turn_off", {"entity_id": self._charging_enable_entity}, blocking=True)
+            await self._ce_write(False, reason="ensure_off")
         self._cancel_relock_task()
 
     async def _ensure_charging_enable_on(self):
@@ -2180,7 +2299,7 @@ class EVLoadController:
                         return
                 else:
                     if not (self._is_known_state(st) and st.state == STATE_ON):
-                        await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
+                        await self._ce_write(True, reason="ensure_on_resume_pre_unlock")
                     self._pending_initial_start = False
 
                     if await self._wait_for_charging_detection(timeout_s=5.0):
@@ -2196,7 +2315,7 @@ class EVLoadController:
 
             st = self.hass.states.get(self._charging_enable_entity)
             if not (self._is_known_state(st) and st.state == STATE_ON):
-                await self.hass.services.async_call("switch", "turn_on", {"entity_id": self._charging_enable_entity}, blocking=True)
+                await self._ce_write(True, reason="ensure_on_final")
             self._pending_initial_start = False
 
             if did_unlock:
@@ -2211,26 +2330,29 @@ class EVLoadController:
                 except Exception:
                     _LOGGER.debug("Failed to reschedule _enforce_start_stop_policy", exc_info=True)
             try:
-                remaining = max(1.0, min(30.0, UNKNOWN_STARTUP_GRACE_SECONDS))
+                remaining = max(1.0, min(5.0, UNKNOWN_STARTUP_GRACE_SECONDS))
                 self.hass.loop.call_later(remaining, _reschedule)
             except Exception:
                 _reschedule()
             return
 
         try:
-            if not self.get_mode("start_stop"):
-                await self._ensure_charging_enable_off()
-                self._reset_timers()
+            if not self.get_mode(MODE_START_STOP):
+                self._cancel_auto_connect_task()
+                self._stop_regulation_loop()
+                self._stop_resume_monitor()
+                self._stop_planner_monitor()
+                self._stop_reclaim_monitor()
+                self._cancel_relock_task()
+                self._cancel_upper_timer()
                 self._charging_active = False
+                self._reset_timers()
+                self._reset_above_upper()
+                await self._ensure_charging_enable_off()
                 return
         except Exception:
             with contextlib.suppress(Exception):
                 await self._ensure_charging_enable_off()
-            self._reset_timers()
-            self._charging_active = False
-            return
-
-        if not self.get_mode(MODE_START_STOP):
             self._cancel_auto_connect_task()
             self._stop_regulation_loop()
             self._stop_resume_monitor()
@@ -2241,7 +2363,7 @@ class EVLoadController:
             self._charging_active = False
             self._reset_timers()
             self._reset_above_upper()
-            await self._ensure_charging_enable_off()
+            return
 
     # ---------------- Mode management ----------------
     def get_mode(self, mode: str) -> bool:
@@ -2258,6 +2380,7 @@ class EVLoadController:
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
+                    self._ce_last_desired = None
                     self.hass.async_create_task(self._ensure_charging_enable_off())
                     self.hass.async_create_task(self._enforce_start_stop_policy())
                     async def _verify_enable_off_later():
@@ -2276,9 +2399,34 @@ class EVLoadController:
                     async def _after_enable_startstop_on():
                         if self._priority_mode_enabled:
                             await async_align_current_with_order(self.hass)
+
+                        # Manual mode: Start/Stop ON should immediately (re)apply manual behavior
+                        if self.get_mode(MODE_MANUAL_AUTO):
+                            if (
+                                self._is_cable_connected()
+                                and self._priority_allowed_cache
+                                and self._planner_window_allows_start()
+                                and self._soc_allows_start()
+                                and self._essential_data_available()
+                            ):
+                                if (not self._priority_mode_enabled) or (await self._have_priority_now()):
+                                    await self._start_charging_and_reclaim()
+                                else:
+                                    await self._ensure_charging_enable_off()
+                            else:
+                                await self._ensure_charging_enable_off()
+
+                            # In manual we don't want regulation/resume monitors
+                            self._stop_regulation_loop()
+                            self._stop_resume_monitor()
+                            self._evaluate_missing_and_start_no_data_timer()
+                            return
+
+                        # Non-manual: existing behavior
                         await self._hysteresis_apply()
                         self._start_regulation_loop_if_needed()
                         self._start_resume_monitor_if_needed()
+
                     self.hass.async_create_task(_after_enable_startstop_on())
                     return
 
