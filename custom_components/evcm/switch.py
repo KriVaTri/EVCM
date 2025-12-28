@@ -221,12 +221,10 @@ class _ModeSwitch(SwitchEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         self._controller.set_mode(self._mode_key, False)
         if self._mode_key == "start_stop":
-            # Immediate, unconditional OFF for charging enable on user toggle
             try:
                 await self._controller._ensure_charging_enable_off()
             except Exception:
                 pass
-            # Priority: advance or align so another entry can take over
             try:
                 if await async_get_priority_mode_enabled(self.hass):
                     current = await async_get_priority(self.hass)
