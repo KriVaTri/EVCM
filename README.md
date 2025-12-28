@@ -60,9 +60,7 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 - repeated commands because state updates arrive late,
 - on/off “chatter” if the platform reports state with delay.
 
-**Recommendation:** prefer local control when possible. If you must use a cloud integration, manually increase debounce/cooldown timings in the code to match your setup’s typical end‑to‑end delay.
-
-for further details and workaround: [docs/README.md](docs/README.md)
+**Recommendation:** prefer local control when possible. If you must use a cloud integration, instructions are available in: [docs/README.md](docs/README.md)
     
 ---
 
