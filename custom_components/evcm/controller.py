@@ -228,8 +228,10 @@ class EVLoadController:
 
         # Time-change unsubscribe handle
         self._midnight_unsub: Optional[Callable[[], None]] = None
+
         # Startup listener unsub handle
         self._started_unsub: Optional[Callable[[], None]] = None
+
         # Track whether the started-listener is still active to avoid double removal on reload
         self._ha_started_listener_active: bool = False
 
@@ -246,7 +248,7 @@ class EVLoadController:
             return (dt_util.utcnow() - self._startup_ts).total_seconds() < UNKNOWN_STARTUP_GRACE_SECONDS
         except Exception:
             return True
-            
+
     def _schedule_startup_grace_recheck(self) -> None:
         # schedule exactly once
         if self._startup_grace_recheck_handle is not None:
@@ -272,7 +274,7 @@ class EVLoadController:
             if self._is_startup_grace_active():
                 return
 
-            _LOGGER.info("Startup grace ended → reconciling state (planner/hysteresis/regulation)")
+            _LOGGER.info("Startup grace ended -> reconciling state (planner/hysteresis/regulation)")
 
             # Apply current realities
             await self._enforce_start_stop_policy()
@@ -1174,6 +1176,17 @@ class EVLoadController:
     def _async_charging_enable_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
+
+        # Keep single-writer cache aligned with actual entity state to avoid stale suppression
+        try:
+            if self._is_known_state(new):
+                # reflect the actual HA state in the cache immediately
+                self._ce_last_desired = True if new.state == STATE_ON else False
+                self._ce_last_write_ts = time.monotonic()
+        except Exception:
+            # don't let cache-sync break event processing
+            _LOGGER.debug("Failed to sync CE cache from event", exc_info=True)
+
         self.hass.async_create_task(self._refresh_priority_mode_flag())
 
         if not self.get_mode(MODE_START_STOP):
@@ -1333,6 +1346,20 @@ class EVLoadController:
                 self._report_unknown(self._cable_entity, getattr(st, "state", None), "cable_initial", side="new")
             return
         self._last_cable_connected = st.state == STATE_ON
+
+        # Ensure internal charging_active flag reflects reality after restart:
+        # if the vehicle is actually charging (status/power indicate charging),
+        # reflect that in self._charging_active so hysteresis and pause logic
+        # behave correctly after the startup grace period.
+        try:
+            if self._last_cable_connected:
+                self._charging_active = bool(self._charging_detected_now())
+            else:
+                self._charging_active = False
+        except Exception:
+            # Be conservative on error: assume not actively charging
+            self._charging_active = False
+
         if self._last_cable_connected:
             self.hass.async_create_task(self._on_cable_connected())
         else:
@@ -1343,6 +1370,30 @@ class EVLoadController:
         self._pending_initial_start = True
         await self._ensure_lock_locked()
 
+        # Ensure priority flags are fresh before making manual-start decisions
+        try:
+            await self._refresh_priority_mode_flag()
+            self._priority_allowed_cache = await self._is_priority_allowed()
+            if not self._priority_mode_enabled:
+                for _ in range(4):
+                    await asyncio.sleep(0.25)
+                    await self._refresh_priority_mode_flag()
+                    self._priority_allowed_cache = await self._is_priority_allowed()
+                    if self._priority_mode_enabled:
+                        break
+        except Exception:
+            pass
+
+        # Reflect whether the vehicle is actually charging at startup
+        try:
+            if self._last_cable_connected:
+                self._charging_active = bool(self._charging_detected_now())
+            else:
+                self._charging_active = False
+        except Exception:
+            self._charging_active = False
+
+        # If possible, set current to MIN on connect according to existing policy (non-blocking)
         if self._current_setting_entity:
             with contextlib.suppress(Exception):
                 dom, _ = self._current_setting_entity.split(".", 1)
@@ -1353,11 +1404,16 @@ class EVLoadController:
                         or not self._charging_detected_now()
                     )
                     if should_set_min:
-                        await self.hass.services.async_call(
-                            "number", "set_value",
-                            {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
-                            blocking=True
-                        )
+                        try:
+                            self.hass.async_create_task(
+                                self.hass.services.async_call(
+                                    "number",
+                                    "set_value",
+                                    {"entity_id": self._current_setting_entity, "value": MIN_CURRENT_A},
+                                )
+                            )
+                        except Exception:
+                            pass
 
         # Priority preemption chain
         try:
@@ -1368,7 +1424,7 @@ class EVLoadController:
                     await async_set_priority(self.hass, self.entry.entry_id)
                     self._priority_allowed_cache = await self._is_priority_allowed()
         except Exception:
-            _LOGGER.debug("Preemptive priority restore failed", exc_info=True)
+            pass
 
         try:
             if self._priority_mode_enabled:
@@ -1379,7 +1435,7 @@ class EVLoadController:
                         await async_set_priority(self.hass, self.entry.entry_id)
                         self._priority_allowed_cache = await self._is_priority_allowed()
         except Exception:
-            _LOGGER.debug("Top-of-order takeover failed", exc_info=True)
+            pass
 
         try:
             if self._priority_mode_enabled:
@@ -1391,20 +1447,92 @@ class EVLoadController:
                         await async_advance_priority_to_next(self.hass, pid)
                         self._priority_allowed_cache = await self._is_priority_allowed()
         except Exception:
-            _LOGGER.debug("Proactive advance failed", exc_info=True)
+            pass
 
         if self._priority_mode_enabled:
             with contextlib.suppress(Exception):
                 await async_align_current_with_order(self.hass)
                 self._priority_allowed_cache = await self._is_priority_allowed()
 
-        # Manual handling
+        # Robust detection whether any other controller is currently charging (bounded poll)
+        someone_charging_else = False
+
+        async def _other_is_charging(other_data) -> bool:
+            try:
+                other_ctl = other_data.get("controller")
+                other_flag = False
+                try:
+                    other_flag = bool(getattr(other_ctl, "_charging_active", False))
+                except Exception:
+                    other_flag = False
+
+                ce = other_data.get("charging_enable_entity") or getattr(other_ctl, "_charging_enable_entity", None)
+                status_e = other_data.get("wallbox_status_entity") or getattr(other_ctl, "_wallbox_status_entity", None)
+                power_e = other_data.get("charge_power_entity") or getattr(other_ctl, "_charge_power_entity", None)
+
+                if other_flag:
+                    return True
+
+                if ce:
+                    st = self.hass.states.get(ce)
+                    if st is not None and st.state == STATE_ON:
+                        return True
+
+                if status_e:
+                    st = self.hass.states.get(status_e)
+                    if st is not None and st.state and str(st.state).strip().lower() == str(WALLBOX_STATUS_CHARGING).strip().lower():
+                        return True
+
+                if power_e:
+                    st = self.hass.states.get(power_e)
+                    if st is not None:
+                        try:
+                            pw = float(st.state)
+                            if pw > 100.0:
+                                return True
+                        except Exception:
+                            pass
+
+            except Exception:
+                pass
+            return False
+
+        try:
+            retries = 8  # ~2s total (8 * 0.25s)
+            for _ in range(retries):
+                controllers_data = (self.hass.data.get(DOMAIN, {}) or {}).copy()
+                someone_charging_else = False
+                for pid, data in controllers_data.items():
+                    if pid == self.entry.entry_id:
+                        continue
+                    try:
+                        if await _other_is_charging(data):
+                            someone_charging_else = True
+                            break
+                    except Exception:
+                        continue
+                if someone_charging_else:
+                    break
+                await asyncio.sleep(0.25)
+        except Exception:
+            someone_charging_else = False
+
+        # Manual handling (strict: manual does NOT preempt an actual ongoing charge)
         if self.get_mode(MODE_MANUAL_AUTO):
             if self.get_mode(MODE_START_STOP):
+                if someone_charging_else:
+                    await self._ensure_charging_enable_off()
+                    self._stop_resume_monitor()
+                    self._stop_regulation_loop()
+                    self._evaluate_missing_and_start_no_data_timer()
+                    return
+
                 if (self._priority_allowed_cache and self._essential_data_available()
                     and self._planner_window_allows_start() and self._soc_allows_start()):
                     if (not self._priority_mode_enabled) or (await self._have_priority_now()):
                         await self._start_charging_and_reclaim()
+                    else:
+                        await self._ensure_charging_enable_off()
                 else:
                     await self._ensure_charging_enable_off()
             else:
@@ -1415,6 +1543,7 @@ class EVLoadController:
             self._evaluate_missing_and_start_no_data_timer()
             return
 
+        # rest unchanged
         if not self.get_mode(MODE_START_STOP):
             await self._ensure_charging_enable_off()
             self._evaluate_missing_and_start_no_data_timer()
@@ -1430,6 +1559,18 @@ class EVLoadController:
             self._evaluate_missing_and_start_no_data_timer()
             return
 
+        # If startup grace is active, do not start new charging sessions here
+        # unless this controller was already actively charging before restart.
+        # This avoids temporary dual-charging caused by transient priority state during startup.
+        if self._is_startup_grace_active() and not self._charging_active:
+            _LOGGER.debug("Startup grace active: deferring auto-start/hysteresis for new cable connect")
+            # Ensure monitors exist so we'll resume checks later
+            self._start_resume_monitor_if_needed()
+            # Save missing-data / timer evaluation
+            self._evaluate_missing_and_start_no_data_timer()
+            return
+
+        # Normal flow once grace is not active (or if we were already charging)
         self._start_auto_connect_routine()
         await self._hysteresis_apply()
         self._start_regulation_loop_if_needed()
@@ -1514,11 +1655,19 @@ class EVLoadController:
     def _start_auto_connect_routine(self):
         if self.get_mode(MODE_MANUAL_AUTO):
             return
+        # Do not start auto-connect during startup grace for new starts
+        if self._is_startup_grace_active():
+            _LOGGER.debug("Auto-connect suppressed: startup grace active")
+            return
         self._cancel_auto_connect_task()
         self._auto_connect_task = self.hass.async_create_task(self._auto_connect_task_run())
 
     async def _auto_connect_task_run(self):
         try:
+            # Defensive: if grace is active when this task actually runs, do not proceed
+            if self._is_startup_grace_active():
+                _LOGGER.debug("Auto-connect task aborted: startup grace still active")
+                return
             await asyncio.sleep(CONNECT_DEBOUNCE_SECONDS)
             if (not self._is_cable_connected() or self.get_mode(MODE_MANUAL_AUTO) or not self.get_mode(MODE_START_STOP)):
                 return
@@ -1673,7 +1822,6 @@ class EVLoadController:
                     reasons.append("soc")
                 if not priority_ok:
                     reasons.append("priority")
-
                 if manual_enabled or self._charging_active:
                     _LOGGER.info("Manual pause: %s", "/".join(reasons))
                     await self._pause_basic(set_current_to_min=not preserve_current)
@@ -2141,15 +2289,23 @@ class EVLoadController:
             if dom != "switch":
                 return
 
-            # Minimal dampener: suppress very fast duplicate ON writes
             now = time.monotonic()
+
+            # Minimal dampener: suppress very fast duplicate ON writes,
+            # but only if the entity has not actually reached ON yet.
             if desired_on and (now - self._ce_last_write_ts) < CE_MIN_TOGGLE_INTERVAL_S:
-                # allow OFF always; suppress only rapid ON spam
-                _LOGGER.debug("CE suppress ON (min interval) reason=%s", reason)
-                return
+                try:
+                    st = self.hass.states.get(self._charging_enable_entity)
+                    if not (st and self._is_known_state(st) and st.state == STATE_ON):
+                        _LOGGER.debug("CE suppress ON (min interval) reason=%s", reason)
+                        return
+                except Exception:
+                    # If we cannot read state for any reason, be conservative and allow write
+                    _LOGGER.debug("CE dampener: failed to read state, allowing write", exc_info=True)
 
             # Internal dedup (prevents spam even if HA state hasn't caught up yet)
             if self._ce_last_desired is not None and self._ce_last_desired == desired_on:
+                # Already heading to desired state — suppress duplicate
                 return
 
             # State-based dedup (prevents unnecessary service calls)
@@ -2157,9 +2313,11 @@ class EVLoadController:
             if self._is_known_state(st):
                 if desired_on and st.state == STATE_ON:
                     self._ce_last_desired = True
+                    self._ce_last_write_ts = now
                     return
                 if (not desired_on) and st.state == STATE_OFF:
                     self._ce_last_desired = False
+                    self._ce_last_write_ts = now
                     return
             else:
                 self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "charging_enable_ce_write_get")
@@ -2167,8 +2325,10 @@ class EVLoadController:
             svc = "turn_on" if desired_on else "turn_off"
             try:
                 await self.hass.services.async_call("switch", svc, {"entity_id": self._charging_enable_entity}, blocking=True)
+                # mark intended result after successful call
                 self._ce_last_desired = desired_on
             finally:
+                # always update last write timestamp so dampener works
                 self._ce_last_write_ts = time.monotonic()
 
             if not desired_on:
@@ -2285,7 +2445,7 @@ class EVLoadController:
             if self._lock_entity and not self._is_lock_unlocked() and self._is_cable_connected():
                 if is_initial_start:
                     if not self._auto_unlock_enabled:
-                        _LOGGER.debug("Initial start: Auto unlock is OFF → no unlock attempt")
+                        _LOGGER.debug("Initial start: Auto unlock is OFF -> no unlock attempt")
                         return
                     if (self._essential_data_available() and self._planner_window_allows_start()
                             and self._soc_allows_start() and self._priority_allowed_cache):
@@ -2305,7 +2465,7 @@ class EVLoadController:
                     if await self._wait_for_charging_detection(timeout_s=5.0):
                         return
                     if not self._auto_unlock_enabled:
-                        _LOGGER.debug("Resume: Auto unlock is OFF → no unlock fallback")
+                        _LOGGER.debug("Resume: Auto unlock is OFF -> no unlock fallback")
                         return
                     ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
                     if not ok:
@@ -2376,7 +2536,7 @@ class EVLoadController:
             if mode == MODE_START_STOP:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Start/Stop toggle → %s", enabled)
+                    _LOGGER.debug("Start/Stop toggle -> %s", enabled)
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
@@ -2435,13 +2595,13 @@ class EVLoadController:
                     self.hass.async_create_task(self._hysteresis_apply(preserve_current=True))
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("ECO toggle → %s", enabled)
+                    _LOGGER.debug("ECO toggle -> %s", enabled)
                 return
 
             if mode == MODE_MANUAL_AUTO:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Manual toggle → %s", enabled)
+                    _LOGGER.debug("Manual toggle -> %s", enabled)
                     if self._current_setting_entity:
                         self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if enabled:
@@ -2474,7 +2634,7 @@ class EVLoadController:
             if mode == MODE_CHARGE_PLANNER:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Planner toggle → %s", enabled)
+                    _LOGGER.debug("Planner toggle -> %s", enabled)
                 if enabled:
                     self._start_planner_monitor_if_needed()
                 else:
@@ -2489,7 +2649,7 @@ class EVLoadController:
             if mode == MODE_STARTSTOP_RESET:
                 if previous != enabled:
                     self.hass.async_create_task(self._save_unified_state())
-                    _LOGGER.debug("Start/Stop Reset toggle → %s", enabled)
+                    _LOGGER.debug("Start/Stop Reset toggle -> %s", enabled)
                 return
         finally:
             self._notify_mode_listeners()
