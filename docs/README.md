@@ -161,11 +161,10 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 - slower response to changing conditions (export/import),
 - less accurate regulation,
 - repeated commands because state updates arrive late,
-- on/off “chatter” if the platform reports state with delay.
 
 **Recommendation:** prefer local control when possible. If you must use a cloud integration, manually increase debounce/cooldown timings in the code to match your setup’s typical end‑to‑end delay.
 
-If your charger integration has 5s end‑to‑end delay (command → effect/state visible), consider using more conservative timings to avoid repeated commands or on/off “chatter”.
+If your charger integration has 5s end‑to‑end delay (command → effect/state visible), consider using more conservative timings when experiencing issues.
 
 - Adjustable in the integration options (UI):
   - Upper start debounce (s): 6s (instead of the default 3s)
