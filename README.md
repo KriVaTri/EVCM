@@ -58,7 +58,6 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 - slower response to changing conditions (export/import),
 - less accurate regulation,
 - repeated commands because state updates arrive late,
-- on/off “chatter” if the platform reports state with delay.
 
 **Recommendation:** prefer local control when possible. If you must use a cloud integration, instructions are available in: [docs/README.md](docs/README.md#compatibility-and-required-entities)
     
