@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Callable, Dict, List, Tuple
 
 from homeassistant.core import HomeAssistant, callback, Event
@@ -266,6 +266,44 @@ class EVLoadController:
             # fallback: run soon
             self.hass.async_create_task(self._after_startup_grace_reconcile())
 
+    async def _maybe_end_startup_grace_early(self) -> None:
+        """End startup grace early when all essential entities are available.
+
+        Idempotent and cancels any scheduled recheck handle.
+        """
+        try:
+            # if not active, nothing to do
+            if not self._is_startup_grace_active():
+                return
+
+            # if essentials are present, end grace and run reconcile
+            if self._essential_data_available():
+                # cancel scheduled handle (if present)
+                if self._startup_grace_recheck_handle is not None:
+                    try:
+                        self._startup_grace_recheck_handle.cancel()
+                    except Exception:
+                        pass
+                    self._startup_grace_recheck_handle = None
+
+                # mark startup_ts in the past so _is_startup_grace_active() becomes False
+                try:
+                    self._startup_ts = dt_util.utcnow() - timedelta(seconds=(UNKNOWN_STARTUP_GRACE_SECONDS + 1))
+                except Exception:
+                    # fallback: set to epoch if timedelta unavailable
+                    try:
+                        self._startup_ts = datetime(1970, 1, 1)
+                    except Exception:
+                        pass
+
+                _LOGGER.debug("Essentials available early; ending startup grace early for entry=%s", self.entry.entry_id)
+                # run the reconcile flow
+                try:
+                    await self._after_startup_grace_reconcile()
+                except Exception:
+                    _LOGGER.exception("Early startup-grace reconcile failed for entry=%s", self.entry.entry_id)
+        except Exception:
+            _LOGGER.debug("maybe_end_startup_grace_early failed", exc_info=True)
 
     async def _after_startup_grace_reconcile(self) -> None:
         """Run once after startup grace ends to avoid missing planner/export/SoC transitions."""
@@ -987,13 +1025,8 @@ class EVLoadController:
             self._soc_limit_percent = DEFAULT_SOC_LIMIT_PERCENT
             self.hass.async_create_task(self._save_unified_state())
 
-        # Sync Start/Stop with Reset on initialize
-        try:
-            desired = self.get_mode(MODE_STARTSTOP_RESET)
-            if self.get_mode(MODE_START_STOP) != desired:
-                self.set_mode(MODE_START_STOP, desired)
-        except Exception:
-            _LOGGER.debug("Failed to sync Start/Stop with Reset on initialize", exc_info=True)
+        # NOTE: Removed automatic Start/Stop Reset application on reload/HA start.
+        # The Start/Stop Reset mode will continue to be applied only on cable disconnect events.
 
         await self._refresh_priority_mode_flag()
         self._priority_allowed_cache = await self._is_priority_allowed()
@@ -1171,6 +1204,8 @@ class EVLoadController:
             return
         self._handle_cable_change(old, new)
         self._evaluate_missing_and_start_no_data_timer()
+        # Possibly end startup grace early if essentials are now available
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_charging_enable_event(self, event: Event):
@@ -1206,6 +1241,8 @@ class EVLoadController:
         self._evaluate_missing_and_start_no_data_timer()
         if self._is_charging_enabled() and not self.get_mode(MODE_MANUAL_AUTO) and self._is_cable_connected():
             self._start_regulation_loop_if_needed()
+        # Possibly end startup grace early if essentials are now available
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_net_power_event(self, event: Event):
@@ -1223,6 +1260,8 @@ class EVLoadController:
         if self.get_mode(MODE_START_STOP) and not self.get_mode(MODE_MANUAL_AUTO):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
+        # Possibly end startup grace early if essentials are now available
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_wallbox_status_event(self, event: Event):
@@ -1252,6 +1291,8 @@ class EVLoadController:
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
+        # Possibly end startup grace early if essentials are now available
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_charge_power_event(self, event: Event):
@@ -1286,6 +1327,8 @@ class EVLoadController:
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
+        # Possibly end startup grace early if essentials are now available
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_lock_event(self, event: Event):
@@ -1359,6 +1402,9 @@ class EVLoadController:
         except Exception:
             # Be conservative on error: assume not actively charging
             self._charging_active = False
+
+        # Try early end of startup grace (if essentials now available)
+        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
         if self._last_cable_connected:
             self.hass.async_create_task(self._on_cable_connected())
