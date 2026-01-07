@@ -98,7 +98,7 @@ REPORT_UNKNOWN_INITIAL = False
 REPORT_UNKNOWN_ENFORCE = False
 REPORT_UNKNOWN_TRANSITION_NEW = False
 REPORT_UNKNOWN_TRANSITION_OLD = False
-UNKNOWN_STARTUP_GRACE_SECONDS = 90.0
+UNKNOWN_STARTUP_GRACE_SECONDS = 15.0
 
 RELOCK_AFTER_CHARGING_SECONDS = 5
 
@@ -265,45 +265,6 @@ class EVLoadController:
         except Exception:
             # fallback: run soon
             self.hass.async_create_task(self._after_startup_grace_reconcile())
-
-    async def _maybe_end_startup_grace_early(self) -> None:
-        """End startup grace early when all essential entities are available.
-
-        Idempotent and cancels any scheduled recheck handle.
-        """
-        try:
-            # if not active, nothing to do
-            if not self._is_startup_grace_active():
-                return
-
-            # if essentials are present, end grace and run reconcile
-            if self._essential_data_available():
-                # cancel scheduled handle (if present)
-                if self._startup_grace_recheck_handle is not None:
-                    try:
-                        self._startup_grace_recheck_handle.cancel()
-                    except Exception:
-                        pass
-                    self._startup_grace_recheck_handle = None
-
-                # mark startup_ts in the past so _is_startup_grace_active() becomes False
-                try:
-                    self._startup_ts = dt_util.utcnow() - timedelta(seconds=(UNKNOWN_STARTUP_GRACE_SECONDS + 1))
-                except Exception:
-                    # fallback: set to epoch if timedelta unavailable
-                    try:
-                        self._startup_ts = datetime(1970, 1, 1)
-                    except Exception:
-                        pass
-
-                _LOGGER.debug("Essentials available early; ending startup grace early for entry=%s", self.entry.entry_id)
-                # run the reconcile flow
-                try:
-                    await self._after_startup_grace_reconcile()
-                except Exception:
-                    _LOGGER.exception("Early startup-grace reconcile failed for entry=%s", self.entry.entry_id)
-        except Exception:
-            _LOGGER.debug("maybe_end_startup_grace_early failed", exc_info=True)
 
     async def _after_startup_grace_reconcile(self) -> None:
         """Run once after startup grace ends to avoid missing planner/export/SoC transitions."""
@@ -1034,7 +995,6 @@ class EVLoadController:
         with contextlib.suppress(Exception):
             self._last_soc_allows = self._soc_allows_start()
             self._last_missing_nonempty = bool(self._current_missing_components())
-        self._subscribe_listeners()
 
         # Defer any service calls and monitors until HA has started
         if self.hass.is_running:
@@ -1051,9 +1011,50 @@ class EVLoadController:
         self._ha_started_listener_active = False
         self._started_unsub = None
 
+        # Defer all heavy/event-driven work a bit to let HA finalize startup
+        self.hass.async_create_task(self._late_start_after_ha_started())
+
         # Install midnight listener and start monitors after HA is running
         self._install_midnight_daily_listener()
         # Schedule potentially blocking routines
+        self.hass.async_create_task(self._enforce_start_stop_policy())
+        self.hass.async_create_task(self._apply_cable_state_initial())
+        self._start_planner_monitor_if_needed()
+        if self._priority_allowed_cache:
+            self._start_regulation_loop_if_needed()
+            self._start_resume_monitor_if_needed()
+        self._evaluate_missing_and_start_no_data_timer()
+        self._schedule_startup_grace_recheck()
+
+    async def _late_start_after_ha_started(self) -> None:
+        # Small minimum delay: give HA a breath even on fast systems
+        await asyncio.sleep(5)
+
+        # Wait until MQTT entities are actually available/known (bounded)
+        ready_ids = self._startup_ready_entity_ids()
+        timeout_s = 180.0
+        deadline = time.monotonic() + timeout_s
+        last_log = 0.0
+
+        while time.monotonic() < deadline:
+            missing = [eid for eid in ready_ids if not self._is_entity_known(eid)]
+            if not missing:
+                break
+
+            now = time.monotonic()
+            # Log every 10 seconds max
+            if now - last_log > 10.0:
+                last_log = now
+                _LOGGER.debug(
+                    "Late-start waiting for MQTT entities (%ds left): %s",
+                    int(deadline - now),
+                    ", ".join(missing),
+                )
+            await asyncio.sleep(1)
+
+        # Now start the integration work
+        self._install_midnight_daily_listener()
+        self._subscribe_listeners()
         self.hass.async_create_task(self._enforce_start_stop_policy())
         self.hass.async_create_task(self._apply_cable_state_initial())
         self._start_planner_monitor_if_needed()
@@ -1189,6 +1190,34 @@ class EVLoadController:
 
         self._last_missing_nonempty = now_missing
 
+    # ---------------- Check if MQTT ready at startup ----------------
+
+    def _is_entity_known(self, entity_id: Optional[str]) -> bool:
+        if not entity_id:
+            return False
+        st = self.hass.states.get(entity_id)
+        return bool(st and st.state not in ("unknown", "unavailable"))
+
+    def _startup_ready_entity_ids(self) -> list[str]:
+        ids: list[str] = []
+        # command + main trigger
+        if self._charging_enable_entity:
+            ids.append(self._charging_enable_entity)
+        if self._cable_entity:
+            ids.append(self._cable_entity)
+
+        # grid inputs
+        if self._grid_single:
+            if self._grid_power_entity:
+                ids.append(self._grid_power_entity)
+        else:
+            if self._grid_export_entity:
+                ids.append(self._grid_export_entity)
+            if self._grid_import_entity:
+                ids.append(self._grid_import_entity)
+
+        return ids
+
     # ---------------- Event callbacks ----------------
     @callback
     def _async_cable_event(self, event: Event):
@@ -1204,8 +1233,6 @@ class EVLoadController:
             return
         self._handle_cable_change(old, new)
         self._evaluate_missing_and_start_no_data_timer()
-        # Possibly end startup grace early if essentials are now available
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_charging_enable_event(self, event: Event):
@@ -1241,8 +1268,6 @@ class EVLoadController:
         self._evaluate_missing_and_start_no_data_timer()
         if self._is_charging_enabled() and not self.get_mode(MODE_MANUAL_AUTO) and self._is_cable_connected():
             self._start_regulation_loop_if_needed()
-        # Possibly end startup grace early if essentials are now available
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_net_power_event(self, event: Event):
@@ -1260,8 +1285,6 @@ class EVLoadController:
         if self.get_mode(MODE_START_STOP) and not self.get_mode(MODE_MANUAL_AUTO):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
-        # Possibly end startup grace early if essentials are now available
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_wallbox_status_event(self, event: Event):
@@ -1393,9 +1416,6 @@ class EVLoadController:
         except Exception:
             # Be conservative on error: assume not actively charging
             self._charging_active = False
-
-        # Try early end of startup grace (if essentials now available)
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
         if self._last_cable_connected:
             self.hass.async_create_task(self._on_cable_connected())
