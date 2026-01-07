@@ -4,7 +4,7 @@ from homeassistant.const import Platform
 
 DOMAIN = "evcm"
 
-PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER]
+PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER, Platform.SENSOR]
 
 # Legacy option keys
 CONF_OPT_MODE_ECO = "mode_eco"
