@@ -93,12 +93,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry_data["post_start_scheduled"] = True
         if hass.is_running:
             _LOGGER.debug("Scheduling controller.async_post_start immediately (HA is running) for entry_id=%s", entry.entry_id)
-            hass.add_job(controller.async_post_start)
+            hass.async_create_task(controller.async_post_start())
         else:
             @callback
             def _on_started(_event):
                 _LOGGER.debug("Scheduling controller.async_post_start on HA started for entry_id=%s", entry.entry_id)
-                hass.add_job(controller.async_post_start)
+                hass.async_create_task(controller.async_post_start())
             hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_started)
     else:
         _LOGGER.debug("Post-start already scheduled; skipping duplicate for entry_id=%s", entry.entry_id)
