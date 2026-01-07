@@ -100,7 +100,7 @@ REPORT_UNKNOWN_TRANSITION_NEW = False
 REPORT_UNKNOWN_TRANSITION_OLD = False
 UNKNOWN_STARTUP_GRACE_SECONDS = 90.0
 
-RELOCK_AFTER_CHARGING_SECONDS = 30
+RELOCK_AFTER_CHARGING_SECONDS = 5
 
 OPT_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
 DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
@@ -1282,17 +1282,12 @@ class EVLoadController:
                     self._report_unknown(self._wallbox_status_entity, getattr(old, "state", None), "status_transition", side="old")
             return
 
-        if self._is_cable_connected() and self._is_status_charging():
-            if not self._relock_task:
-                _LOGGER.debug("Status=CHARGING detected → scheduling relock watcher (direct)")
-                self._schedule_relock_after_charging_start(already_detected=True)
-
+        # NOTE: do NOT schedule relock from status event here.
+        # Relock should be scheduled only after we explicitly unlocked for an initial start.
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
-        # Possibly end startup grace early if essentials are now available
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_charge_power_event(self, event: Event):
@@ -1318,17 +1313,13 @@ class EVLoadController:
         except Exception:
             pw = None
 
-        if self._is_cable_connected() and (pw is not None and pw > 100):
-            if not self._relock_task:
-                _LOGGER.debug("Power>100W detected → scheduling relock watcher (direct)")
-                self._schedule_relock_after_charging_start(already_detected=True)
+        # NOTE: do NOT schedule relock from power event here.
+        # Relock is scheduled only when we explicitly unlocked for an initial start.
 
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
-        # Possibly end startup grace early if essentials are now available
-        self.hass.async_create_task(self._maybe_end_startup_grace_early())
 
     @callback
     def _async_lock_event(self, event: Event):
@@ -1409,7 +1400,9 @@ class EVLoadController:
         if self._last_cable_connected:
             self.hass.async_create_task(self._on_cable_connected())
         else:
-            self.hass.async_create_task(self._on_cable_disconnected())
+            # IMPORTANT: call _on_cable_disconnected(initial=True) during initial apply to avoid triggering
+            # Start/Stop Reset as if a real user disconnect happened during runtime.
+            self.hass.async_create_task(self._on_cable_disconnected(initial=True))
 
     async def _on_cable_connected(self):
         self._reset_timers()
@@ -1623,7 +1616,13 @@ class EVLoadController:
         self._start_resume_monitor_if_needed()
         self._evaluate_missing_and_start_no_data_timer()
 
-    async def _on_cable_disconnected(self):
+    async def _on_cable_disconnected(self, initial: bool = False):
+        """
+        Handle cable disconnected.
+
+        When called during initial apply (initial=True) we must NOT apply the MODE_STARTSTOP reset.
+        Only apply reset for real runtime disconnect transitions (initial=False).
+        """
         self._pending_initial_start = False
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
@@ -1644,12 +1643,14 @@ class EVLoadController:
                         blocking=True
                     )
 
-        try:
-            desired = self.get_mode(MODE_STARTSTOP_RESET)
-            if self.get_mode(MODE_START_STOP) != desired:
-                self.set_mode(MODE_START_STOP, desired)
-        except Exception:
-            _LOGGER.debug("Failed to sync Start/Stop with Reset on disconnect", exc_info=True)
+        # Only apply Start/Stop Reset on a real runtime disconnect (not during initial apply/reconnect on startup)
+        if not initial:
+            try:
+                desired = self.get_mode(MODE_STARTSTOP_RESET)
+                if self.get_mode(MODE_START_STOP) != desired:
+                    self.set_mode(MODE_START_STOP, desired)
+            except Exception:
+                _LOGGER.debug("Failed to sync Start/Stop with Reset on disconnect", exc_info=True)
 
         await self._advance_if_current()
         self._evaluate_missing_and_start_no_data_timer()
@@ -1939,11 +1940,7 @@ class EVLoadController:
         lower = self._current_lower()
         charge_power = self._get_charge_power_w()
 
-        if self._is_status_charging() or (charge_power is not None and charge_power > 100):
-            if not self._relock_task:
-                _LOGGER.debug("Hysteresis: charging detected → relock watcher")
-                self._schedule_relock_after_charging_start(already_detected=True)
-
+        # NOTE: do NOT schedule relock here. Leave relock scheduling to the explicit unlock path.
         if not self._charging_active:
             self._reset_timers()
             if self._sustained_above_upper(net):
@@ -2206,11 +2203,7 @@ class EVLoadController:
                     reg_min, self._supply_profile_key
                 )
 
-                if self._is_status_charging() or (charge_power is not None and charge_power > 100):
-                    if not self._relock_task:
-                        _LOGGER.debug("RegLoop: charging detected → relock watcher (direct)")
-                        self._schedule_relock_after_charging_start(already_detected=True)
-
+                # NOTE: do NOT schedule relock here. Keep regulation logic only for current adjustment.
                 if net is not None:
                     lower = self._current_lower()
                     if net < lower:
