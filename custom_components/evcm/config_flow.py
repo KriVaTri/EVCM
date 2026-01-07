@@ -146,6 +146,10 @@ def _build_sensors_schema(
     selected_device: Optional[str] = None,
     filter_keys: Optional[set[str]] = None,
 ) -> vol.Schema:
+    # Defensive: callers may pass None for defaults; ensure we have a dict here.
+    if not isinstance(defaults, dict):
+        defaults = {}
+
     num_sel_w = {
         "number": {
             "min": MIN_THRESHOLD_VALUE,
@@ -533,10 +537,10 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if errors:
             try:
-                schema = _build_sensors_schema(grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(grid_single, self._s_defaults, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS)
             return self.async_show_form(
                 step_id="sensors",
                 data_schema=schema,
@@ -719,10 +723,10 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(grid_single, self._values, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS)
             name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
             return self.async_show_form(step_id="sensors", data_schema=schema, errors=errors, description_placeholders={"name": name})
 
