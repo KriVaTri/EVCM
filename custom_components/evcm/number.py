@@ -17,6 +17,9 @@ from .const import (
     NET_POWER_TARGET_MAX_W,
     NET_POWER_TARGET_STEP_W,
     DEFAULT_SOC_LIMIT_PERCENT,
+    EXT_IMPORT_LIMIT_MIN_W,
+    EXT_IMPORT_LIMIT_MAX_W,
+    EXT_IMPORT_LIMIT_STEP_W,
 )
 from .controller import EVLoadController
 from .priority import async_get_order, async_set_entry_order_index
@@ -48,10 +51,14 @@ async def async_setup_entry(
     friendly_name_target = f"{base} net power target"
     object_id_target = slugify(f"evcm {base} net power target")
 
+    friendly_name_peak = f"{base} Max peak avg"
+    object_id_peak = slugify(f"evcm {base} Max peak avg")
+
     entities: list[NumberEntity] = [
         _SocLimitNumber(controller, entry.entry_id, friendly_name_soc, object_id_soc),
         _PriorityOrderNumber(hass, entry, friendly_name_order, object_id_order),
         _NetPowerTargetNumber(controller, entry.entry_id, friendly_name_target, object_id_target),
+        _MaxPeakAvgNumber(controller, entry.entry_id, friendly_name_peak, object_id_peak),
     ]
     async_add_entities(entities)
 
@@ -206,4 +213,43 @@ class _NetPowerTargetNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         self._controller.set_net_power_target_w(value)
+        self.async_write_ha_state()
+
+
+class _MaxPeakAvgNumber(NumberEntity):
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_mode = NumberMode.BOX
+    _attr_native_step = EXT_IMPORT_LIMIT_STEP_W
+    _attr_native_min_value = EXT_IMPORT_LIMIT_MIN_W
+    _attr_native_max_value = EXT_IMPORT_LIMIT_MAX_W
+    _attr_native_unit_of_measurement = "W"
+    _attr_suggested_display_precision = 0
+    _attr_icon = "mdi:chart-bell-curve"
+
+    def __init__(self, controller: EVLoadController, entry_id: str, friendly_name: str, object_id: str) -> None:
+        self._controller = controller
+        self._entry_id = entry_id
+        self._attr_unique_id = f"{DOMAIN}_{entry_id}_ext_import_limit"
+        self._attr_name = friendly_name
+        self.entity_id = f"number.{object_id}"
+
+    @property
+    def device_info(self):
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        base = _base_name(entry) if entry else "EVCM"
+        return {
+            "identifiers": {(DOMAIN, self._entry_id)},
+            "name": base,
+            "manufacturer": "KriVaTri",
+            "model": "EVCM",
+        }
+
+    @property
+    def native_value(self) -> Optional[float]:
+        val = self._controller.ext_import_limit_w
+        return int(val or 0)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._controller.set_ext_import_limit_w(value)
         self.async_write_ha_state()
