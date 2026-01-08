@@ -60,6 +60,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - SoC limit: maximum EV battery % at which charging should pause.
 - Upper start debounce: seconds that net power must stay at/above the upper threshold before (re)starting.
 - Auto unlock: per-entry switch to allow or prevent automatic unlocking of the wallbox lock to start charging.
+- Lock: in addition to its security aspect, lock is also used to postpone initial start of the charging session.
 
 ---
 
@@ -146,6 +147,9 @@ Required charger entities (must be provided by the charger integration):
 - Cable connected: binary_sensor
 - Charging enable: switch
 - Lock: lock
+  **If your charger/wallbox does not provide a lock entity:**  
+  EVCM still requires one to be configured. In that case you can work around this by creating a **dummy lock** in Home Assistant and selecting that lock entity during EVCM setup/options.
+  The dummy lock does not need to control real hardware; it only exists to satisfy the required entity mapping.
 
 Required grid input:
 - Grid power sensor: either a single net power sensor (export positive, import negative) or separate Import and Export sensors (both positive-only, net = Export − Import).
