@@ -29,7 +29,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
 - [6. Priority charging behavior](#6-priority-charging-behavior)  
 - [7. Priority order numbering](#7-priority-order-numbering)  
-- [8. Hysteresis thresholds (ECO vs OFF)](#8-hysteresis-thresholds-eco-vs-off)  
+- [8. Hysteresis thresholds (ECO vs OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-vs-off)  
 - [9. Automatic regulation (regulation loop)](#9-automatic-regulation-regulation-loop)  
 - [10. SoC limit](#10-soc-limit)  
 - [11. Planner window (start/stop datetimes)](#11-planner-window-startstop-datetimes)  
@@ -49,6 +49,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/impor[...]
 - ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
 - ECO OFF thresholds: an alternate band used when ECO mode is OFF.
+- Max Peak avg: this setting overrides the ECO thresholds.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
 - Manual mode: manual override; no dynamic hysteresis regulation, but planner/SoC/priority still gate starting.
 - Priority Charging: when ON, only the “current priority” entry is allowed to regulate.
@@ -276,7 +277,7 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO ON vs ECO OFF)
+## 8) Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta depending on supply voltage / phase profile)
@@ -293,6 +294,12 @@ Upper start debounce:
 - Applies to automatic starts in Start/Stop mode; Manual mode ignores threshold gating for starting.
 
 Upper/lower values and minimum band sizes are validated in the config flow (phase-dependent).
+
+Max Peak avg:
+- This is an optional threshold that can be set outside the config flow.
+- When set it overrides the ECO thresholds, but only applies when it is stricter than the currently active lower threshold; otherwise it has no effect.
+- Threshold delta will be set to the default for the used power profile.
+- To disable set the value to 0.
 
 ---
 
