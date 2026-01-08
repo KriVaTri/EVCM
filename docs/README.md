@@ -147,6 +147,7 @@ Required charger entities (must be provided by the charger integration):
 - Cable connected: binary_sensor
 - Charging enable: switch
 - Lock: lock
+  
   **If your charger/wallbox does not provide a lock entity:**  
   EVCM still requires one to be configured. In that case you can work around this by creating a **dummy lock** in Home Assistant and selecting that lock entity during EVCM setup/options.
   The dummy lock does not need to control real hardware; it only exists to satisfy the required entity mapping.
