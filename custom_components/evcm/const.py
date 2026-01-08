@@ -174,3 +174,9 @@ SUPPLY_PROFILE_MIN_BAND = {
 
 # Event name for planner datetime updates
 PLANNER_DATETIME_UPDATED_EVENT = "evcm_planner_datetime_updated"
+
+# External import limit (Max peak avg)
+CONF_EXT_IMPORT_LIMIT_W = "ext_import_limit_w"
+EXT_IMPORT_LIMIT_MIN_W = 0
+EXT_IMPORT_LIMIT_MAX_W = 25000
+EXT_IMPORT_LIMIT_STEP_W = 100
