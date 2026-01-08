@@ -62,10 +62,15 @@ from .const import (
     CONF_SUPPLY_PROFILE,
     SUPPLY_PROFILES,
     SUPPLY_PROFILE_REG_THRESHOLDS,
+    SUPPLY_PROFILE_MIN_BAND,
+    MIN_BAND_230,
+    MIN_BAND_400,
     CONF_NET_POWER_TARGET_W,
     DEFAULT_NET_POWER_TARGET_W,
     PLANNER_DATETIME_UPDATED_EVENT,
     DEFAULT_SOC_LIMIT_PERCENT,
+    CONF_EXT_IMPORT_LIMIT_W,
+    EXT_IMPORT_LIMIT_MAX_W,
 )
 
 from .priority import (
@@ -182,6 +187,9 @@ class EVLoadController:
         self._planner_stop_dt = self._parse_dt_option(eff.get(CONF_PLANNER_STOP_ISO))
         self._soc_limit_percent = self._parse_soc_option(eff.get(CONF_SOC_LIMIT_PERCENT))
         self._net_power_target_w: int = int(eff.get(CONF_NET_POWER_TARGET_W, DEFAULT_NET_POWER_TARGET_W))
+
+        # External import limit (Max peak avg)
+        self._ext_import_limit_w: Optional[int] = None
 
         # Runtime flags / tasks
         self._last_cable_connected: Optional[bool] = None
@@ -576,6 +584,7 @@ class EVLoadController:
                 "manual_enabled": False,
                 "net_power_target_w": int(target_opt) if isinstance(target_opt, (int, float)) else DEFAULT_NET_POWER_TARGET_W,
                 "auto_unlock_enabled": True,
+                "ext_import_limit_w": None,
             }
             await self._state_store.async_save(self._state)
         else:
@@ -602,6 +611,13 @@ class EVLoadController:
         except Exception:
             self._auto_unlock_enabled = True
 
+        # External import limit
+        try:
+            ext = self._safe_int(self._state.get("ext_import_limit_w"))
+            self._ext_import_limit_w = ext if (ext is not None and ext > 0) else None
+        except Exception:
+            self._ext_import_limit_w = None
+
         self._state_loaded = True
 
     async def _save_unified_state(self):
@@ -617,6 +633,7 @@ class EVLoadController:
             "manual_enabled": self.get_mode(MODE_MANUAL_AUTO),
             "net_power_target_w": self._net_power_target_w,
             "auto_unlock_enabled": bool(self._auto_unlock_enabled),
+            "ext_import_limit_w": self._ext_import_limit_w if self._ext_import_limit_w is not None else None,
         }
         _LOGGER.debug(
             "Persist planner datetimes: start=%s stop=%s (planner_enabled=%s)",
@@ -1217,6 +1234,38 @@ class EVLoadController:
                 ids.append(self._grid_import_entity)
 
         return ids
+
+    # ---------------- External import limit (Max peak avg) ----------------
+    @property
+    def ext_import_limit_w(self) -> Optional[int]:
+        return self._ext_import_limit_w
+
+    def set_ext_import_limit_w(self, value: Optional[float | int]):
+        """Set external import limit (positive W). 0 or None disables."""
+        try:
+            iv = int(round(float(value if value is not None else 0)))
+        except Exception:
+            iv = 0
+        iv = max(0, min(EXT_IMPORT_LIMIT_MAX_W, iv))
+        new_val = iv if iv > 0 else None
+        if new_val != self._ext_import_limit_w:
+            self._ext_import_limit_w = new_val
+            self.hass.async_create_task(self._save_unified_state())
+            _LOGGER.info("External import limit (Max peak avg) updated → %s W", new_val or 0)
+            # Re-apply hysteresis with new thresholds
+            self.hass.async_create_task(self._hysteresis_apply())
+            self._evaluate_missing_and_start_no_data_timer()
+
+    # Helper: profile min band
+    def _profile_min_band_w(self) -> int:
+        try:
+            band = SUPPLY_PROFILE_MIN_BAND.get(self._supply_profile_key)
+            if band is None:
+                band = MIN_BAND_400 if self._supply_phases == 3 else MIN_BAND_230
+            return int(band)
+        except Exception:
+            return 4500 if self._supply_phases == 3 else 1700
+
 
     # ---------------- Event callbacks ----------------
     @callback
@@ -1832,9 +1881,22 @@ class EVLoadController:
 
     # ---------------- Hysteresis logic ----------------
     def _current_upper(self) -> float:
+        # If external import limit is set, derive upper from effective lower + profile band
+        ext = self._ext_import_limit_w
+        if ext and ext > 0:
+            # effective lower = max(base_lower, -ext)
+            base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+            effective_lower = max(base_lower, float(-ext))
+            return float(effective_lower + self._profile_min_band_w())
+        # Fallback to configured upper thresholds
         return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
 
     def _current_lower(self) -> float:
+        # If external import limit is set, override lower to -ext when base is stricter (more negative)
+        ext = self._ext_import_limit_w
+        if ext and ext > 0:
+            base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+            return float(max(base_lower, float(-ext)))
         return self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
 
     async def _hysteresis_apply(self, preserve_current: bool = False):
@@ -1910,6 +1972,7 @@ class EVLoadController:
                     await self._ensure_charging_enable_off()
             return
 
+        # Planner gating
         if not planner_ok:
             if is_effectively_active:
                 _LOGGER.info("Planner window inactive → pause.")
@@ -1924,6 +1987,7 @@ class EVLoadController:
             self._reset_above_upper()
             return
 
+        # SoC gating
         if not soc_ok:
             if is_effectively_active:
                 _LOGGER.info("SoC limit reached → pause.")
@@ -1938,6 +2002,7 @@ class EVLoadController:
             self._reset_above_upper()
             return
 
+        # Priority gating
         if not priority_ok:
             if is_effectively_active:
                 await self._pause_basic(set_current_to_min=not preserve_current)
