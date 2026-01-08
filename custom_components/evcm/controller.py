@@ -1266,6 +1266,19 @@ class EVLoadController:
         except Exception:
             return 4500 if self._supply_phases == 3 else 1700
 
+    def _max_peak_override_active(self) -> bool:
+        """True if Max peak avg is stricter than the currently active lower threshold."""
+        ext = self._ext_import_limit_w
+        if not ext or ext <= 0:
+            return False
+
+        base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+        ext_lower = float(-ext)
+
+        # Only apply if ext is stricter (less negative / closer to zero) than base lower.
+        # Example: base=-7000, ext=-5000 -> active (True)
+        # Example: base=-2000, ext=-5000 -> NOT active (False)
+        return ext_lower > float(base_lower)
 
     # ---------------- Event callbacks ----------------
     @callback
@@ -1880,24 +1893,15 @@ class EVLoadController:
             _LOGGER.warning("Planner monitor error: %s", exc)
 
     # ---------------- Hysteresis logic ----------------
-    def _current_upper(self) -> float:
-        # If external import limit is set, derive upper from effective lower + profile band
-        ext = self._ext_import_limit_w
-        if ext and ext > 0:
-            # effective lower = max(base_lower, -ext)
-            base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
-            effective_lower = max(base_lower, float(-ext))
-            return float(effective_lower + self._profile_min_band_w())
-        # Fallback to configured upper thresholds
-        return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
-
     def _current_lower(self) -> float:
-        # If external import limit is set, override lower to -ext when base is stricter (more negative)
-        ext = self._ext_import_limit_w
-        if ext and ext > 0:
-            base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
-            return float(max(base_lower, float(-ext)))
+        if self._max_peak_override_active():
+            return float(-self._ext_import_limit_w)  # ext is guaranteed set here
         return self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+
+    def _current_upper(self) -> float:
+        if self._max_peak_override_active():
+            return float(self._current_lower() + self._profile_min_band_w())
+        return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
 
     async def _hysteresis_apply(self, preserve_current: bool = False):
         # Skip hysteresis during initial startup grace to avoid blocking HA bootstrap
