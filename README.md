@@ -94,6 +94,7 @@ Turn the `Start/Stop` switch ON to let it work.
 - Plug in the EV
 - Make sure `Start/Stop` is ON
 - ECO ON uses the ECO ON thresholds; ECO OFF uses the other band (handy for different seasons like summer vs winter)
+- Use the Max Peak avg setting to override ECO thresholds if an easy adjustable or automated threshold is needed (e.g. prevent exceeding monthly max peak average)
 - Watch it adjust amps up/down as sun/clouds change
 - Need to force charging? Turn `Manual` ON (ignores threshold gating and automatic current regulation)
 - Want it to stop at 80%? Set the SoC limit number to 80
