@@ -24,9 +24,10 @@ You set a few numbers and switches; it does the boring part.
 
 ## Example of a typical EVCM entry
 
-<img width="300" height="446" alt="EVCM image small" src="https://github.com/user-attachments/assets/80c41faf-32d4-4483-b0c8-fee03b715992" />
+<img width="300" height="446" alt="EVCM image small" src="https://github.com/user-attachments/assets/a33f9f99-fd3c-48ac-8895-3557ba2d1c4a" />
 
 ---
+
 
 ## Minimum required entities
 
