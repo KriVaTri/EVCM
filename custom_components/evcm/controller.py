@@ -1207,7 +1207,7 @@ class EVLoadController:
 
         self._last_missing_nonempty = now_missing
 
-    # ---------------- Check if MQTT ready at startup ----------------
+    # ---------------- Check availability external entities at startup ----------------
 
     def _is_entity_known(self, entity_id: Optional[str]) -> bool:
         if not entity_id:
