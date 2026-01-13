@@ -180,3 +180,10 @@ CONF_EXT_IMPORT_LIMIT_W = "ext_import_limit_w"
 EXT_IMPORT_LIMIT_MIN_W = 0
 EXT_IMPORT_LIMIT_MAX_W = 25000
 EXT_IMPORT_LIMIT_STEP_W = 100
+
+# External charging_enable OFF
+OPT_EXTERNAL_OFF_LATCHED = "external_off_latched"
+OPT_EXTERNAL_LAST_OFF_TS = "external_last_off_ts"
+OPT_EXTERNAL_LAST_ON_TS = "external_last_on_ts"
+
+# EOF
