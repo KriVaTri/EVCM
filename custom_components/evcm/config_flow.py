@@ -742,3 +742,5 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
             new_opts[k] = v
 
         return self.async_create_entry(title="", data=new_opts)
+
+# EOF
