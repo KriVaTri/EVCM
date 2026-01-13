@@ -92,7 +92,6 @@ async def async_setup_entry(
 
 class _ThresholdSensor(SensorEntity):
     """Sensor for a single ECO threshold."""
-
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = UnitOfPower.WATT
@@ -136,3 +135,5 @@ class _ThresholdSensor(SensorEntity):
             return float(raw)
         except (ValueError, TypeError):
             return float(self._default)
+
+# EOF
