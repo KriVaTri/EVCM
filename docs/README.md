@@ -37,10 +37,11 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [13. Manual vs Start/Stop modes](#13-manual-vs-startstop-modes)  
 - [14. Events and bus signals](#14-events-and-bus-signals)  
 - [15. Entities overview](#15-entities-overview)  
-- [16. Unknown/unavailable detection](#16-unknownunavailable-detection)  
-- [17. Common scenarios](#17-common-scenarios)  
-- [18. Use Case Example](#18-use-case-example)
-- [19. Troubleshooting](#19-troubleshooting)
+- [16. Unknown/unavailable detection](#16-unknownunavailable-detection)
+- [17. Safety: external charging_enable OFF detection](#17-safety-external-charging_enable-OFF-detection) 
+- [18. Common scenarios](#18-common-scenarios)  
+- [19. Use Case Example](#19-use-case-example)
+- [20. Troubleshooting](#20-troubleshooting)
 
 ---
 
@@ -441,7 +442,25 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 17) Common scenarios
+## 17) Safety: external `charging_enable` OFF detection
+
+EVCM detects when the configured `charging_enable` switch is turned **OFF externally** (by the wallbox itself, the vendor app, another integration, or an automation) while the EV cable is connected.
+
+When this happens, EVCM will:
+- create a **persistent notification** (`EVCM: External OFF detected`) including a timestamp,
+- **latch** the OFF state and **block automatic re-enabling** of charging until the EV is unplugged,
+- log a warning indicating that charging is blocked due to the external OFF latch.
+
+### Clearing the latch
+The external OFF latch is cleared when:
+- the EV is unplugged (recommended), or
+- `charging_enable` is turned ON externally (manual override; not advised unless you explicitly intended it).
+
+EVCM also recreates the relevant notification(s) after a Home Assistant restart/reload if needed, so the user always understands why charging is blocked.
+
+---
+
+## 18) Common scenarios
 
 1. Two wallboxes, Priority OFF  
    Both may regulate independently (no priority gating).
@@ -471,7 +490,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 18) Use Case Example
+## 19) Use Case Example
 
 Use Case Example with ECO mode ON:
 
@@ -490,7 +509,7 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 
 ---
 
-## 19) Troubleshooting
+## 20) Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
