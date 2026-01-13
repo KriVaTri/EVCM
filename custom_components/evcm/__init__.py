@@ -184,3 +184,5 @@ async def _update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
     domain_data["last_options"] = curr_opts
     _LOGGER.debug("EVCM: effective option changes detected; reloading entry_id=%s", entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)
+
+# EOF
