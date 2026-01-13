@@ -71,6 +71,9 @@ from .const import (
     DEFAULT_SOC_LIMIT_PERCENT,
     CONF_EXT_IMPORT_LIMIT_W,
     EXT_IMPORT_LIMIT_MAX_W,
+    OPT_EXTERNAL_OFF_LATCHED,
+    OPT_EXTERNAL_LAST_OFF_TS,
+    OPT_EXTERNAL_LAST_ON_TS,
 )
 
 from .priority import (
@@ -233,6 +236,81 @@ class EVLoadController:
         self._ce_lock: asyncio.Lock = asyncio.Lock()
         self._ce_last_desired: Optional[bool] = None
         self._ce_last_write_ts: float = 0.0
+
+        # ---- External OFF detection and latch ----
+        self._ce_last_intent_desired: Optional[bool] = None
+        self._ce_last_intent_ts: float = 0.0
+        self._ce_external_off_last_notify_ts: float = 0.0
+        self._ce_external_off_latched: bool = False
+        self._ce_on_blocked_logged = False
+        self._ce_external_last_off_ts: Optional[float] = None
+        self._ce_external_last_on_ts: Optional[float] = None
+
+        # Restore external OFF/ON state from config entry options (survives reload + HA restart)
+        with contextlib.suppress(Exception):
+            self._ce_external_off_latched = bool(self.entry.options.get(OPT_EXTERNAL_OFF_LATCHED, False))
+            self._ce_external_last_off_ts = self.entry.options.get(OPT_EXTERNAL_LAST_OFF_TS)
+            self._ce_external_last_on_ts = self.entry.options.get(OPT_EXTERNAL_LAST_ON_TS)
+
+        if self._ce_external_off_latched:
+            _LOGGER.warning(
+                "EVCM: restored external OFF latch from previous run. entry=%s",
+                self.entry.entry_id
+            )
+
+        # Recreate persistent notifications after restart/reload (HA may not restore them)
+        try:
+            device_name = self._device_name_for_notify()
+
+            def _fmt_ts(ts: Optional[float]) -> str:
+                if not ts:
+                    return "unknown"
+                # Show local time for user clarity
+                return dt_util.as_local(dt_util.utc_from_timestamp(float(ts))).strftime("%Y-%m-%d %H:%M:%S")
+
+            if self._ce_external_last_on_ts:
+                msg_on = (
+                    f"External charging_enable ON detected for {device_name}\n"
+                    f"Last external ON: {_fmt_ts(self._ce_external_last_on_ts)}\n"
+                    "External OFF latch cleared: yes\n"
+                    "Charging can resume."
+                )
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "title": "EVCM: External ON detected",
+                            "message": msg_on,
+                            "notification_id": f"evcm_external_on_{self.entry.entry_id}",
+                        },
+                        blocking=False,
+                    )
+                )
+
+            if self._ce_external_last_off_ts or self._ce_external_off_latched:
+                msg_off = (
+                    f"External charging_enable OFF detected for {device_name}\n"
+                    f"Last external OFF: {_fmt_ts(self._ce_external_last_off_ts)}\n"
+                    f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                    "To reset, unplug the EV.\n"
+                    "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                    "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
+                )
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "title": "EVCM: External OFF detected",
+                            "message": msg_off,
+                            "notification_id": f"evcm_external_off_{self.entry.entry_id}",
+                        },
+                        blocking=False,
+                    )
+                )
+        except Exception:
+            _LOGGER.debug("EVCM: failed to recreate external ON/OFF notifications on init", exc_info=True)
 
         # Time-change unsubscribe handle
         self._midnight_unsub: Optional[Callable[[], None]] = None
@@ -1003,9 +1081,6 @@ class EVLoadController:
             self._soc_limit_percent = DEFAULT_SOC_LIMIT_PERCENT
             self.hass.async_create_task(self._save_unified_state())
 
-        # NOTE: Removed automatic Start/Stop Reset application on reload/HA start.
-        # The Start/Stop Reset mode will continue to be applied only on cable disconnect events.
-
         await self._refresh_priority_mode_flag()
         self._priority_allowed_cache = await self._is_priority_allowed()
         self._init_monotonic = time.monotonic()
@@ -1207,7 +1282,7 @@ class EVLoadController:
 
         self._last_missing_nonempty = now_missing
 
-    # ---------------- Check availability external entities at startup ----------------
+    # ---------------- Check if essential entities ready at startup ----------------
 
     def _is_entity_known(self, entity_id: Optional[str]) -> bool:
         if not entity_id:
@@ -1280,6 +1355,28 @@ class EVLoadController:
         # Example: base=-2000, ext=-5000 -> NOT active (False)
         return ext_lower > float(base_lower)
 
+    def _device_name_for_notify(self) -> str:
+        device_name = None
+        with contextlib.suppress(Exception):
+            device_name = getattr(self, "name", None) or getattr(self, "_name", None)
+        if not device_name:
+            with contextlib.suppress(Exception):
+                device_name = getattr(self.entry, "title", None)
+        return device_name or self.entry.entry_id
+
+    async def _persist_external_off_state(self) -> None:
+        """Persist external-off state (latch + last event timestamps) in config entry options."""
+        try:
+            new_opts = {
+                **self.entry.options,
+                OPT_EXTERNAL_OFF_LATCHED: bool(self._ce_external_off_latched),
+                OPT_EXTERNAL_LAST_OFF_TS: self._ce_external_last_off_ts,
+                OPT_EXTERNAL_LAST_ON_TS: self._ce_external_last_on_ts,
+            }
+            self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
+        except Exception:
+            _LOGGER.debug("EVCM: failed to persist external OFF state", exc_info=True)
+
     # ---------------- Event callbacks ----------------
     @callback
     def _async_cable_event(self, event: Event):
@@ -1312,6 +1409,124 @@ class EVLoadController:
             _LOGGER.debug("Failed to sync CE cache from event", exc_info=True)
 
         self.hass.async_create_task(self._refresh_priority_mode_flag())
+
+        device_name = None
+        with contextlib.suppress(Exception):
+            # Prefer configured name if you have it
+            device_name = getattr(self, "name", None) or getattr(self, "_name", None)
+
+        if not device_name:
+            with contextlib.suppress(Exception):
+                # Fallback: use the config entry title
+                device_name = getattr(self.entry, "title", None)
+
+        if not device_name:
+            device_name = self.entry.entry_id
+
+        # ---- External OFF latch + external ON clears latch (two separate notifications) ----
+        try:
+            if self._is_known_state(new):
+                now = time.monotonic()
+
+                # External ON: if user/MQTT turns charging_enable ON while latched, clear the latch
+                if str(new.state) == STATE_ON and self._ce_external_off_latched:
+                    self._ce_external_off_latched = False
+                    self._ce_on_blocked_logged = False
+                    self._ce_external_last_on_ts = dt_util.utcnow().timestamp()
+                    self.hass.async_create_task(self._persist_external_off_state())
+                    _LOGGER.warning(
+                        "EVCM: external OFF latch cleared by external ON. entry=%s entity=%s",
+                        self.entry.entry_id, self._charging_enable_entity
+                    )
+
+                    msg = (
+                        f"External charging_enable ON detected for {device_name}\n"
+                        f"Last external ON: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        "External OFF latch cleared: yes\n"
+                        "Charging can resume."
+                    )
+
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "persistent_notification",
+                            "create",
+                            {
+                                "title": "EVCM: External ON detected",
+                                "message": msg,
+                                "notification_id": f"evcm_external_on_{self.entry.entry_id}",
+                            },
+                            blocking=False,
+                        )
+                    )
+
+                # External OFF detection + latch
+                if str(new.state) == STATE_OFF:
+                    # "Expected OFF" if our last intent was OFF very recently.
+                    expected_off_recent = (
+                        self._ce_last_intent_desired is False
+                        and (now - float(self._ce_last_intent_ts or 0.0)) <= 5.0
+                    )
+
+                    if not expected_off_recent:
+                        cable_connected = False
+                        try:
+                            cable_connected = self._is_cable_connected()
+                        except Exception:
+                            cable_connected = False
+
+                        # Latch on ANY external OFF (we did not recently intend OFF)
+                        if cable_connected and not self._ce_external_off_latched:
+                            self._ce_external_off_latched = True
+                            self._ce_on_blocked_logged = False
+                            self._ce_external_last_off_ts = dt_util.utcnow().timestamp()
+                            self.hass.async_create_task(self._persist_external_off_state())
+                            last_intent = (
+                                "on" if self._ce_last_intent_desired is True
+                                else "off" if self._ce_last_intent_desired is False
+                                else "unknown"
+                            )
+                            age_s = now - float(self._ce_last_intent_ts or 0.0)
+                            _LOGGER.warning(
+                                "EVCM: external OFF latched until cable disconnect. entry=%s entity=%s last_intent=%s age=%.1fs",
+                                self.entry.entry_id, self._charging_enable_entity, last_intent, age_s
+                            )
+
+                        # Notify OFF (dedupe with cooldown)
+                        if cable_connected and (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
+                            self._ce_external_off_last_notify_ts = now
+
+                            last_intent = (
+                                "on" if self._ce_last_intent_desired is True
+                                else "off" if self._ce_last_intent_desired is False
+                                else "unknown"
+                            )
+                            age_s = now - float(self._ce_last_intent_ts or 0.0)
+
+                            msg = (
+                                f"External charging_enable OFF detected for {device_name}\n"
+                                f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                                "To reset, unplug the EV.\n"
+                                "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                                "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
+                            )
+
+                            _LOGGER.warning("EVCM: %s", msg.replace("\n", " | "))
+
+                            self.hass.async_create_task(
+                                self.hass.services.async_call(
+                                    "persistent_notification",
+                                    "create",
+                                    {
+                                        "title": "EVCM: External OFF detected",
+                                        "message": msg,
+                                        "notification_id": f"evcm_external_off_{self.entry.entry_id}",
+                                    },
+                                    blocking=False,
+                                )
+                            )
+        except Exception:
+            _LOGGER.debug("EVCM: external OFF detection/latch failed", exc_info=True)
 
         if not self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._ensure_charging_enable_off())
@@ -1367,8 +1582,6 @@ class EVLoadController:
                     self._report_unknown(self._wallbox_status_entity, getattr(old, "state", None), "status_transition", side="old")
             return
 
-        # NOTE: do NOT schedule relock from status event here.
-        # Relock should be scheduled only after we explicitly unlocked for an initial start.
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
             self.hass.async_create_task(self._hysteresis_apply())
@@ -1397,9 +1610,6 @@ class EVLoadController:
             pw = float(new.state)
         except Exception:
             pw = None
-
-        # NOTE: do NOT schedule relock from power event here.
-        # Relock is scheduled only when we explicitly unlocked for an initial start.
 
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
@@ -1466,24 +1676,17 @@ class EVLoadController:
             return
         self._last_cable_connected = st.state == STATE_ON
 
-        # Ensure internal charging_active flag reflects reality after restart:
-        # if the vehicle is actually charging (status/power indicate charging),
-        # reflect that in self._charging_active so hysteresis and pause logic
-        # behave correctly after the startup grace period.
         try:
             if self._last_cable_connected:
                 self._charging_active = bool(self._charging_detected_now())
             else:
                 self._charging_active = False
         except Exception:
-            # Be conservative on error: assume not actively charging
             self._charging_active = False
 
         if self._last_cable_connected:
             self.hass.async_create_task(self._on_cable_connected())
         else:
-            # IMPORTANT: call _on_cable_disconnected(initial=True) during initial apply to avoid triggering
-            # Start/Stop Reset as if a real user disconnect happened during runtime.
             self.hass.async_create_task(self._on_cable_disconnected(initial=True))
 
     async def _on_cable_connected(self):
@@ -1680,9 +1883,6 @@ class EVLoadController:
             self._evaluate_missing_and_start_no_data_timer()
             return
 
-        # If startup grace is active, do not start new charging sessions here
-        # unless this controller was already actively charging before restart.
-        # This avoids temporary dual-charging caused by transient priority state during startup.
         if self._is_startup_grace_active() and not self._charging_active:
             _LOGGER.debug("Startup grace active: deferring auto-start/hysteresis for new cable connect")
             # Ensure monitors exist so we'll resume checks later
@@ -1699,12 +1899,18 @@ class EVLoadController:
         self._evaluate_missing_and_start_no_data_timer()
 
     async def _on_cable_disconnected(self, initial: bool = False):
-        """
-        Handle cable disconnected.
+        if self._ce_external_off_latched or self._ce_external_last_off_ts or self._ce_external_last_on_ts:
+            _LOGGER.info(
+                "EVCM: external OFF/ON state cleared (cable disconnected) entry=%s",
+                self.entry.entry_id
+            )
 
-        When called during initial apply (initial=True) we must NOT apply the MODE_STARTSTOP reset.
-        Only apply reset for real runtime disconnect transitions (initial=False).
-        """
+        self._ce_external_off_latched = False
+        self._ce_on_blocked_logged = False
+        self._ce_external_last_off_ts = None
+        self._ce_external_last_on_ts = None
+        self.hass.async_create_task(self._persist_external_off_state())
+
         self._pending_initial_start = False
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
@@ -2029,7 +2235,6 @@ class EVLoadController:
         lower = self._current_lower()
         charge_power = self._get_charge_power_w()
 
-        # NOTE: do NOT schedule relock here. Leave relock scheduling to the explicit unlock path.
         if not self._charging_active:
             self._reset_timers()
             if self._sustained_above_upper(net):
@@ -2140,7 +2345,6 @@ class EVLoadController:
         self._no_data_task = self.hass.async_create_task(_runner())
 
     def _conditions_for_timers(self) -> bool:
-        # Timers should not run during the startup grace period
         if self._is_startup_grace_active():
             return False
         return (
@@ -2228,7 +2432,6 @@ class EVLoadController:
 
     # ---------------- Regulation loop ----------------
     def _start_regulation_loop_if_needed(self):
-        # Do not start regulation loop during startup grace
         if self._is_startup_grace_active():
             return
         if self._regulation_task and not self._regulation_task.done():
@@ -2292,7 +2495,6 @@ class EVLoadController:
                     reg_min, self._supply_profile_key
                 )
 
-                # NOTE: do NOT schedule relock here. Keep regulation logic only for current adjustment.
                 if net is not None:
                     lower = self._current_lower()
                     if net < lower:
@@ -2408,9 +2610,18 @@ class EVLoadController:
             return
 
         async with self._ce_lock:
+            # PoC: remember our last intent (even if later dedup/veto prevents a call)
+            self._ce_last_intent_desired = bool(desired_on)
+            self._ce_last_intent_ts = time.monotonic()
+
             # Hard veto: if Start/Stop is OFF, never send ON
             if desired_on and not self.get_mode(MODE_START_STOP):
                 _LOGGER.debug("CE veto ON (start_stop off) reason=%s", reason)
+                return
+
+            # Extra veto: if wallbox externally disabled, do not try to re-enable until unplug
+            if desired_on and self._ce_external_off_latched:
+                _LOGGER.debug("CE veto ON (external OFF latch active) reason=%s", reason)
                 return
 
             dom, _ = self._charging_enable_entity.split(".", 1)
@@ -2419,8 +2630,6 @@ class EVLoadController:
 
             now = time.monotonic()
 
-            # Minimal dampener: suppress very fast duplicate ON writes,
-            # but only if the entity has not actually reached ON yet.
             if desired_on and (now - self._ce_last_write_ts) < CE_MIN_TOGGLE_INTERVAL_S:
                 try:
                     st = self.hass.states.get(self._charging_enable_entity)
@@ -2558,6 +2767,20 @@ class EVLoadController:
 
     async def _ensure_charging_enable_on(self):
         if not self._charging_enable_entity or not self.get_mode(MODE_START_STOP):
+            return
+
+        if self._ce_external_off_latched:
+            if not self._ce_on_blocked_logged:
+                self._ce_on_blocked_logged = True
+                _LOGGER.warning(
+                    "EVCM: charging_enable ON blocked (external OFF latch active) entry=%s entity=%s",
+                    self.entry.entry_id, self._charging_enable_entity
+                )
+            else:
+                _LOGGER.debug(
+                    "EVCM: charging_enable ON blocked (external OFF latch active) reason=dedup entry=%s entity=%s",
+                    self.entry.entry_id, self._charging_enable_entity
+                )
             return
 
         is_initial_start = self._pending_initial_start
@@ -2785,3 +3008,5 @@ class EVLoadController:
     # ---------------- Public helpers ----------------
     def get_min_charge_power_w(self) -> int:
         return self._effective_min_charge_power()
+
+# EOF
