@@ -454,9 +454,9 @@ When this happens, EVCM will:
 
 ### Clearing the latch
 The external OFF latch is cleared when:
-- the EV is unplugged (recommended), or
-- `charging_enable` is turned ON externally, or
-- turned back ON manually (**Warning:** this is not advised if charging was stopped by the wallbox due to an internal safety condition.  
+- the EV is unplugged, or
+- `charging_enable` is turned ON externally by the same mechanisme that turned it OFF, or
+- turned ON manually (**Warning:** this is not advised if charging was stopped by the wallbox due to an internal safety condition.  
    If you did not intentionally turn charging OFF yourself, investigate the wallbox first before forcing charging back ON.
 
 EVCM also recreates the relevant notification(s) after a Home Assistant restart/reload if needed, so the user always understands why charging is blocked.
