@@ -98,7 +98,6 @@ class _PlannerDateTime(DateTimeEntity):
 
     @property
     def native_value(self) -> Optional[datetime]:
-        # Correct: read properties/fields, do NOT call
         return (
             self._controller.planner_start_dt
             if self._is_start
@@ -106,7 +105,6 @@ class _PlannerDateTime(DateTimeEntity):
         )
 
     async def async_set_value(self, value: datetime) -> None:
-        # Treat naive datetimes as local (NOT as UTC); keep timezone conversions stable.
         if value.tzinfo is None:
             value = value.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
         else:
@@ -118,3 +116,5 @@ class _PlannerDateTime(DateTimeEntity):
             await self._controller.async_set_planner_stop_dt_persist(value)
 
         self.async_write_ha_state()
+
+# EOF
