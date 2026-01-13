@@ -250,3 +250,5 @@ class _ModeSwitch(SwitchEntity):
             "manufacturer": "KriVaTri",
             "model": "EVCM",
         }
+
+# EOF
