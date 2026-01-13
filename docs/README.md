@@ -449,7 +449,7 @@ EVCM detects when the configured `charging_enable` switch is turned **OFF extern
 
 When this happens, EVCM will:
 - create a **persistent notification** (`EVCM: External OFF detected`) including a timestamp,
-- **latch** the OFF state and **block automatic re-enabling** of charging until the EV is unplugged,
+- **latch** the OFF state and **block automatic re-enabling** of charging,
 - log a warning indicating that charging is blocked due to the external OFF latch.
 
 ### Clearing the latch
