@@ -253,3 +253,5 @@ class _MaxPeakAvgNumber(NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         self._controller.set_ext_import_limit_w(value)
         self.async_write_ha_state()
+
+# EOF
