@@ -32,8 +32,8 @@ You set a few numbers and switches; it does the boring part.
 ## Minimum required entities
 
 From your charger integration (e.g. Wallbox) you need:
-- Charge power sensor
-- Charging status / state sensor
+- Charge power sensor (sensor)
+- Charging status / state sensor (sensor)
 - Cable connected (binary_sensor)
 - Charging enable (switch)
 - Lock (lock entity)
@@ -46,7 +46,8 @@ From your energy setup:
 Optional:
 - EV battery SoC (%) for use with the SoC limit function
 
-If you have these, you can use EVCM.
+If your setup does not expose these required entities directly (for example when using Modbus),
+you can create **Template Helpers** in Home Assistant to bridge the gap.
 
 ---
 
@@ -60,7 +61,8 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 - less accurate regulation,
 - repeated commands because state updates arrive late,
 
-**Recommendation:** prefer local control when possible. If you must use a cloud integration, instructions are available in: [docs/README.md](docs/README.md#compatibility-and-required-entities)
+**Recommendation:** prefer local control when possible. If you must use a cloud integration,
+instructions are available in: [docs/README.md](docs/README.md#compatibility-and-required-entities)
     
 ---
 
