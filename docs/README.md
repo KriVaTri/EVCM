@@ -445,6 +445,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 ## 17) Safety: external `charging_enable` OFF detection
 
 EVCM detects when the configured `charging_enable` switch is turned **OFF externally** (by the wallbox itself, the vendor app, another integration, or an automation) while the EV cable is connected.
+(If you have an automation that toggles the same `charging_enable` entity, consider using the EVCM **Start/Stop** switch instead).
 
 When this happens, EVCM will:
 - create a **persistent notification** (`EVCM: External OFF detected`) including a timestamp,
