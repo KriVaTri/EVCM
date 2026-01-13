@@ -370,3 +370,5 @@ async def async_handover_after_pause(hass: HomeAssistant, paused_entry_id: str) 
             await async_align_current_with_order(hass)
     except Exception:
         _LOGGER.debug("handover_after_pause failed for %s", _name_for(hass, paused_entry_id), exc_info=True)
+
+# EOF
