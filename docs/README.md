@@ -29,7 +29,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
 - [6. Priority charging behavior](#6-priority-charging-behavior)  
 - [7. Priority order numbering](#7-priority-order-numbering)  
-- [8. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-vs-off)  
+- [8. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-on-vs-eco-off-and-max-peak-avg)  
 - [9. Automatic regulation (regulation loop)](#9-automatic-regulation-regulation-loop)  
 - [10. SoC limit](#10-soc-limit)  
 - [11. Planner window (start/stop datetimes)](#11-planner-window-startstop-datetimes)  
