@@ -1828,8 +1828,6 @@ class EVLoadController:
         if not bool(self._phase_switch_auto_enabled):
             return True
 
-        # ... rest van de methode blijft ongewijzigd ...
-
         # Start/Stop must be ON (otherwise we should not act at all)
         if not self.get_mode(MODE_START_STOP):
             return True
@@ -3218,7 +3216,6 @@ class EVLoadController:
             self._evaluate_missing_and_start_no_data_timer()
             return
 
-        # rest unchanged
         if not self.get_mode(MODE_START_STOP):
             await self._ensure_charging_enable_off()
             self._evaluate_missing_and_start_no_data_timer()
@@ -3914,7 +3911,6 @@ class EVLoadController:
                     reg_min, reg_profile_key, inc_export, dec_import, self._phase_feedback_value
                 )
 
-                # NIEUWE DEBUG LOG:
                 _LOGGER.debug(
                     "RegTick ADJUST CHECK: net_ok=%s status_ok=%s (status=%s, expected=%s) current_entity=%s missing=%s soc_ok=%s charge_power=%s reg_min=%s power_ok=%s",
                     net is not None,
