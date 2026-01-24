@@ -4,7 +4,13 @@ from homeassistant.const import Platform
 
 DOMAIN = "evcm"
 
-PLATFORMS: list[Platform] = [Platform.SWITCH, Platform.DATETIME, Platform.NUMBER, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.SWITCH,
+    Platform.DATETIME,
+    Platform.NUMBER,
+    Platform.SENSOR,
+    Platform.SELECT,
+]
 
 # Legacy option keys
 CONF_OPT_MODE_ECO = "mode_eco"
@@ -44,16 +50,16 @@ SUPPLY_PROFILES = {
     "eu_1ph_230": {
         "label": "1-phase 230V/240V",
         "phases": 1,
-        "phase_voltage_v": 235,
-        "min_power_6a_w": int(235 * 6),
+        "phase_voltage_v": 230,
+        "min_power_6a_w": int(220 * 6),
         "regulation_min_w": 1300,
     },
     "eu_3ph_400": {
         "label": "3-phase 400V",
         "phases": 3,
         "phase_voltage_v": 230,
-        "min_power_6a_w": int(230 * 6 * 3),
-        "regulation_min_w": 4000,
+        "min_power_6a_w": int(220 * 6 * 3),
+        "regulation_min_w": 3900,
     },
     "na_3ph_208": {
         "label": "3-phase 208V",
@@ -119,6 +125,17 @@ DEFAULT_ECO_ON_LOWER = -2000
 DEFAULT_ECO_OFF_UPPER = -2000
 DEFAULT_ECO_OFF_LOWER = -7000
 
+# Alternate (EU 1-phase) thresholds for phase switching
+CONF_ECO_ON_UPPER_ALT = "eco_on_upper_alt_w"
+CONF_ECO_ON_LOWER_ALT = "eco_on_lower_alt_w"
+CONF_ECO_OFF_UPPER_ALT = "eco_off_upper_alt_w"
+CONF_ECO_OFF_LOWER_ALT = "eco_off_lower_alt_w"
+
+DEFAULT_ECO_ON_UPPER_ALT = 1700
+DEFAULT_ECO_ON_LOWER_ALT = -1000
+DEFAULT_ECO_OFF_UPPER_ALT = -1000
+DEFAULT_ECO_OFF_LOWER_ALT = -3500
+
 MIN_THRESHOLD_VALUE = -25000
 MAX_THRESHOLD_VALUE = 25000
 
@@ -141,7 +158,6 @@ CONF_PLANNER_START_ISO = "planner_start_iso"
 CONF_PLANNER_STOP_ISO = "planner_stop_iso"
 CONF_SOC_LIMIT_PERCENT = "soc_limit_percent"
 
-# Default SoC limit on setup
 DEFAULT_SOC_LIMIT_PERCENT = 80
 
 # Wallbox current limit
@@ -163,7 +179,6 @@ MIN_BAND_208 = 2600
 MIN_BAND_200 = 1500
 MIN_BAND_120 = 1000
 
-# Map supply profiles to their minimum band
 SUPPLY_PROFILE_MIN_BAND = {
     "eu_1ph_230": MIN_BAND_230,
     "eu_3ph_400": MIN_BAND_400,
@@ -172,8 +187,13 @@ SUPPLY_PROFILE_MIN_BAND = {
     "na_1ph_120": MIN_BAND_120,
 }
 
-# Event name for planner datetime updates
 PLANNER_DATETIME_UPDATED_EVENT = "evcm_planner_datetime_updated"
+
+# charging_enable retry (when command has no effect / sticky state)
+CE_ENABLE_RETRY_INTERVAL_S = 60
+CE_ENABLE_MAX_RETRIES = 10
+CE_DISABLE_RETRY_INTERVAL_S = 30
+CE_DISABLE_MAX_RETRIES = 10
 
 # External import limit (Max peak avg)
 CONF_EXT_IMPORT_LIMIT_W = "ext_import_limit_w"
@@ -185,5 +205,112 @@ EXT_IMPORT_LIMIT_STEP_W = 100
 OPT_EXTERNAL_OFF_LATCHED = "external_off_latched"
 OPT_EXTERNAL_LAST_OFF_TS = "external_last_off_ts"
 OPT_EXTERNAL_LAST_ON_TS = "external_last_on_ts"
+
+# Phase switching (EU-only v1)
+CONF_PHASE_SWITCH_SUPPORTED = "phase_switch_supported"
+CONF_PHASE_MODE_FEEDBACK_SENSOR = "phase_mode_feedback_sensor"
+
+# Persisted runtime state keys (unified store)
+CONF_PHASE_SWITCH_AUTO_ENABLED = "phase_switch_auto_enabled"
+CONF_PHASE_SWITCH_ACTIVE_PROFILE = "phase_switch_active_profile"  # reserved (future)
+CONF_PHASE_SWITCH_FORCED_PROFILE = "phase_switch_forced_profile"  # "primary" or "alternate"
+
+PHASE_PROFILE_PRIMARY = "primary"      # EU: 3P 400V
+PHASE_PROFILE_ALTERNATE = "alternate"  # EU: 1P 230V
+
+# Event-driven phase switch request
+PHASE_SWITCH_REQUEST_EVENT = "evcm_phase_switch_request"
+PHASE_SWITCH_SOURCE_FORCE = "force"
+PHASE_SWITCH_SOURCE_AUTO = "auto"
+
+# Timings
+PHASE_SWITCH_CE_VETO_SECONDS_DEFAULT = 10
+PHASE_SWITCH_WAIT_FOR_STOP_SECONDS_DEFAULT = 60
+PHASE_SWITCH_STOPPED_POWER_W_DEFAULT = 50
+
+# UI/status: if no valid feedback after this during a request -> Unknown + notify
+PHASE_SWITCH_REQUEST_FEEDBACK_TIMEOUT_S = 300
+
+# Phase switching UI mode select
+PHASE_SWITCH_MODE_AUTO = "Auto"
+PHASE_SWITCH_MODE_FORCE_1P = "Force 1p"
+PHASE_SWITCH_MODE_FORCE_3P = "Force 3p"
+
+PHASE_SWITCH_MODE_OPTIONS = [
+    PHASE_SWITCH_MODE_AUTO,
+    PHASE_SWITCH_MODE_FORCE_1P,
+    PHASE_SWITCH_MODE_FORCE_3P,
+]
+
+# Phase switching request throttling (no-queue)
+PHASE_SWITCH_COOLDOWN_SECONDS = 300
+
+# Persisted keys in unified store
+OPT_PHASE_SWITCH_COOLDOWN_UNTIL_ISO = "phase_switch_cooldown_until_iso"
+OPT_PHASE_SWITCH_COOLDOWN_TARGET = "phase_switch_cooldown_target"
+
+# Auto phase switching (v1: stopped-based)
+CONF_AUTO_PHASE_SWITCH_DELAY_MIN = "auto_phase_switch_delay_min"
+AUTO_PHASE_SWITCH_DELAY_MIN_MIN = 15
+AUTO_PHASE_SWITCH_DELAY_MIN_MAX = 60
+DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN = 15
+
+# Controller timing constants
+CONNECT_DEBOUNCE_SECONDS = 1
+EXPORT_SUSTAIN_SECONDS = 5
+PLANNER_MONITOR_INTERVAL_S = 1.0
+RELOCK_AFTER_CHARGING_SECONDS = 5
+
+# Current limits
+MIN_CURRENT_A = 6
+
+# Unknown state handling
+UNKNOWN_DEBOUNCE_SECONDS = 30.0
+UNKNOWN_STARTUP_GRACE_SECONDS = 15.0
+
+# Upper debounce defaults
+DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
+UPPER_DEBOUNCE_MIN_SECONDS = 0
+UPPER_DEBOUNCE_MAX_SECONDS = 60
+
+# charging_enable toggle timing
+CE_MIN_TOGGLE_INTERVAL_S = 0.5
+
+# Auto phase switching timing
+AUTO_RESET_DEBOUNCE_SECONDS = 180.0
+AUTO_1P_TO_3P_MARGIN_W = 1000
+
+# Charging detection thresholds
+CHARGING_POWER_THRESHOLD_W = 100
+CHARGING_WAIT_TIMEOUT_S = 5.0
+CHARGING_DETECTION_TIMEOUT_S = 120.0
+
+# State persistence
+STATE_STORAGE_VERSION = 1
+STATE_STORAGE_KEY_PREFIX = "evcm_state"
+STATE_SAVE_DEBOUNCE_DELAY_S = 0.5
+
+# Startup timing
+POST_START_LOCK_DELAY_S = 5.0
+LATE_START_INITIAL_DELAY_S = 5
+MQTT_READY_TIMEOUT_S = 180.0
+MQTT_READY_POLL_INTERVAL_S = 1.0
+
+# Lock timing
+UNLOCK_TIMEOUT_S = 5.0
+LOCK_WAIT_POLL_INTERVAL_S = 0.2
+
+# Regulation timing
+REGULATION_MIN_POWER_CHECK_DELAY_S = 1.0
+
+# Priority polling
+PRIORITY_REFRESH_POLL_INTERVAL_S = 0.25
+PRIORITY_REFRESH_RETRIES = 4
+OTHER_CHARGING_CHECK_RETRIES = 8
+OTHER_CHARGING_CHECK_INTERVAL_S = 0.25
+
+# Verify delays
+CE_VERIFY_DELAY_S = 1.0
+
 
 # EOF
