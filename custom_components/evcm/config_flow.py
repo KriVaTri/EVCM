@@ -22,12 +22,9 @@ from .const import (
     CONF_CHARGING_ENABLE,
     CONF_LOCK_SENSOR,
     CONF_CURRENT_SETTING,
-    # Legacy compat flag
     CONF_WALLBOX_THREE_PHASE,
-    # Supply profile
     CONF_SUPPLY_PROFILE,
     SUPPLY_PROFILES,
-    # Thresholds
     CONF_ECO_ON_UPPER,
     CONF_ECO_ON_LOWER,
     CONF_ECO_OFF_UPPER,
@@ -38,11 +35,9 @@ from .const import (
     DEFAULT_ECO_OFF_LOWER,
     MIN_THRESHOLD_VALUE,
     MAX_THRESHOLD_VALUE,
-    # Profile-specific min band
     SUPPLY_PROFILE_MIN_BAND,
     MIN_BAND_230,
     MIN_BAND_400,
-    # Timers and intervals
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -50,14 +45,11 @@ from .const import (
     DEFAULT_SUSTAIN_SECONDS,
     SUSTAIN_MIN_SECONDS,
     SUSTAIN_MAX_SECONDS,
-    # Device + optional
     CONF_DEVICE_ID,
     CONF_EV_BATTERY_LEVEL,
-    # Current limit
     CONF_MAX_CURRENT_LIMIT_A,
     ABS_MIN_CURRENT_A,
     ABS_MAX_CURRENT_A,
-    # Phase switching (EUprofile-only)
     CONF_PHASE_SWITCH_SUPPORTED,
     CONF_PHASE_MODE_FEEDBACK_SENSOR,
     CONF_ECO_ON_UPPER_ALT,
@@ -68,12 +60,10 @@ from .const import (
     DEFAULT_ECO_ON_LOWER_ALT,
     DEFAULT_ECO_OFF_UPPER_ALT,
     DEFAULT_ECO_OFF_LOWER_ALT,
-    # Auto phase switching (v1)
     CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
     AUTO_PHASE_SWITCH_DELAY_MIN_MIN,
     AUTO_PHASE_SWITCH_DELAY_MIN_MAX,
     DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
-    # Phase switching control mode
     CONF_PHASE_SWITCH_CONTROL_MODE,
     PHASE_CONTROL_INTEGRATION,
     PHASE_CONTROL_WALLBOX,
