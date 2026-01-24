@@ -15,7 +15,8 @@
         "title": "Wallbox device",
         "description": "Select a wallbox device (optional) to pre-populate sensors",
         "data": {
-          "device_id": "Device"
+          "device_id": "Device",
+          "phase_switch_supported": "my wallbox supports 1-3 phase switching"
         }
       },
       "sensors": {
@@ -32,14 +33,24 @@
           "lock_sensor": "Wallbox lock",
           "current_setting_entity": "Charging current setting number",
           "ev_battery_level_sensor": "EV SoC",
+
+          "phase_mode_feedback_sensor": "Phase mode feedback (sensor or input_select; value must be 1p/3p)",
+
           "eco_on_upper_w": "ECO ON upper (W)",
           "eco_on_lower_w": "ECO ON lower (W)",
           "eco_off_upper_w": "ECO OFF upper (W)",
           "eco_off_lower_w": "ECO OFF lower (W)",
+
+          "eco_on_upper_alt_w": "ALT (1P) ECO ON upper (W)",
+          "eco_on_lower_alt_w": "ALT (1P) ECO ON lower (W)",
+          "eco_off_upper_alt_w": "ALT (1P) ECO OFF upper (W)",
+          "eco_off_lower_alt_w": "ALT (1P) ECO OFF lower (W)",
+
           "scan_interval": "Scan interval (s)",
           "upper_debounce_seconds": "Upper start debounce (s)",
           "sustain_seconds": "Sustain time (s)",
-          "max_current_limit_a": "Max charging current (A)"
+          "max_current_limit_a": "Max charging current (A)",
+          "auto_phase_switch_delay_min": "Auto phase switch delay (minutes)"
         }
       }
     },
@@ -66,7 +77,8 @@
         "title": "Device",
         "description": "Select or change a wallbox device",
         "data": {
-          "device_id": "Device"
+          "device_id": "Device",
+          "phase_switch_supported": "my wallbox supports 1-3 phase switching"
         }
       },
       "sensors": {
@@ -83,14 +95,24 @@
           "lock_sensor": "Wallbox lock",
           "current_setting_entity": "Charging current setting number",
           "ev_battery_level_sensor": "EV SoC",
+
+          "phase_mode_feedback_sensor": "Phase mode feedback",
+
           "eco_on_upper_w": "ECO ON upper (W)",
           "eco_on_lower_w": "ECO ON lower (W)",
           "eco_off_upper_w": "ECO OFF upper (W)",
           "eco_off_lower_w": "ECO OFF lower (W)",
+
+          "eco_on_upper_alt_w": "ALT ECO ON upper (W)",
+          "eco_on_lower_alt_w": "ALT ECO ON lower (W)",
+          "eco_off_upper_alt_w": "ALT ECO OFF upper (W)",
+          "eco_off_lower_alt_w": "ALT ECO OFF lower (W)",
+
           "scan_interval": "Scan interval (s)",
           "upper_debounce_seconds": "Upper start debounce (s)",
           "sustain_seconds": "Sustain time (s)",
-          "max_current_limit_a": "Max charging current (A)"
+          "max_current_limit_a": "Max charging current (A)",
+          "auto_phase_switch_delay_min": "Auto phase switch delay (minutes)"
         }
       }
     }
