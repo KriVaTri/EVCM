@@ -69,11 +69,75 @@ from .const import (
     DEFAULT_NET_POWER_TARGET_W,
     PLANNER_DATETIME_UPDATED_EVENT,
     DEFAULT_SOC_LIMIT_PERCENT,
-    CONF_EXT_IMPORT_LIMIT_W,
     EXT_IMPORT_LIMIT_MAX_W,
     OPT_EXTERNAL_OFF_LATCHED,
     OPT_EXTERNAL_LAST_OFF_TS,
     OPT_EXTERNAL_LAST_ON_TS,
+    CONF_PHASE_SWITCH_SUPPORTED,
+    CONF_PHASE_SWITCH_AUTO_ENABLED,
+    CONF_PHASE_SWITCH_FORCED_PROFILE,
+    PHASE_SWITCH_MODE_AUTO,
+    PHASE_SWITCH_MODE_FORCE_1P,
+    PHASE_SWITCH_MODE_FORCE_3P,
+    CONF_PHASE_MODE_FEEDBACK_SENSOR,
+    PHASE_PROFILE_PRIMARY,
+    PHASE_PROFILE_ALTERNATE,
+    PHASE_SWITCH_REQUEST_EVENT,
+    PHASE_SWITCH_SOURCE_FORCE,
+    PHASE_SWITCH_SOURCE_AUTO,
+    PHASE_SWITCH_CE_VETO_SECONDS_DEFAULT,
+    PHASE_SWITCH_WAIT_FOR_STOP_SECONDS_DEFAULT,
+    PHASE_SWITCH_STOPPED_POWER_W_DEFAULT,
+    PHASE_SWITCH_REQUEST_FEEDBACK_TIMEOUT_S,
+    PHASE_SWITCH_COOLDOWN_SECONDS,
+    OPT_PHASE_SWITCH_COOLDOWN_UNTIL_ISO,
+    OPT_PHASE_SWITCH_COOLDOWN_TARGET,
+    CONF_ECO_ON_UPPER_ALT,
+    CONF_ECO_ON_LOWER_ALT,
+    CONF_ECO_OFF_UPPER_ALT,
+    CONF_ECO_OFF_LOWER_ALT,
+    DEFAULT_ECO_ON_UPPER_ALT,
+    DEFAULT_ECO_ON_LOWER_ALT,
+    DEFAULT_ECO_OFF_UPPER_ALT,
+    DEFAULT_ECO_OFF_LOWER_ALT,
+    CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
+    AUTO_PHASE_SWITCH_DELAY_MIN_MIN,
+    AUTO_PHASE_SWITCH_DELAY_MIN_MAX,
+    DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
+    CE_ENABLE_RETRY_INTERVAL_S,
+    CE_ENABLE_MAX_RETRIES,
+    CE_DISABLE_RETRY_INTERVAL_S,
+    CE_DISABLE_MAX_RETRIES,
+    CONNECT_DEBOUNCE_SECONDS,
+    EXPORT_SUSTAIN_SECONDS,
+    PLANNER_MONITOR_INTERVAL_S,
+    RELOCK_AFTER_CHARGING_SECONDS,
+    MIN_CURRENT_A,
+    UNKNOWN_DEBOUNCE_SECONDS,
+    UNKNOWN_STARTUP_GRACE_SECONDS,
+    DEFAULT_UPPER_DEBOUNCE_SECONDS,
+    UPPER_DEBOUNCE_MIN_SECONDS,
+    UPPER_DEBOUNCE_MAX_SECONDS,
+    CE_MIN_TOGGLE_INTERVAL_S,
+    AUTO_RESET_DEBOUNCE_SECONDS,
+    AUTO_1P_TO_3P_MARGIN_W,
+    CHARGING_POWER_THRESHOLD_W,
+    CHARGING_WAIT_TIMEOUT_S,
+    CHARGING_DETECTION_TIMEOUT_S,
+    STATE_STORAGE_VERSION,
+    STATE_STORAGE_KEY_PREFIX,
+    STATE_SAVE_DEBOUNCE_DELAY_S,
+    POST_START_LOCK_DELAY_S,
+    LATE_START_INITIAL_DELAY_S,
+    MQTT_READY_TIMEOUT_S,
+    MQTT_READY_POLL_INTERVAL_S,
+    UNLOCK_TIMEOUT_S,
+    LOCK_WAIT_POLL_INTERVAL_S,
+    PRIORITY_REFRESH_POLL_INTERVAL_S,
+    PRIORITY_REFRESH_RETRIES,
+    OTHER_CHARGING_CHECK_RETRIES,
+    OTHER_CHARGING_CHECK_INTERVAL_S,
+    CE_VERIFY_DELAY_S,
 )
 
 from .priority import (
@@ -91,31 +155,20 @@ from .priority import (
 
 _LOGGER = logging.getLogger(__name__)
 
-STATE_STORAGE_VERSION = 1
-STATE_STORAGE_KEY_PREFIX = "evcm_state"
-
-CONNECT_DEBOUNCE_SECONDS = 1
-EXPORT_SUSTAIN_SECONDS = 5
-PLANNER_MONITOR_INTERVAL = 1.0
-
-MIN_CURRENT_A = 6
-
-UNKNOWN_DEBOUNCE_SECONDS = 30.0
 REPORT_UNKNOWN_GETTERS = False
 REPORT_UNKNOWN_INITIAL = False
 REPORT_UNKNOWN_ENFORCE = False
 REPORT_UNKNOWN_TRANSITION_NEW = False
 REPORT_UNKNOWN_TRANSITION_OLD = False
-UNKNOWN_STARTUP_GRACE_SECONDS = 15.0
-
-RELOCK_AFTER_CHARGING_SECONDS = 5
 
 OPT_UPPER_DEBOUNCE_SECONDS = "upper_debounce_seconds"
-DEFAULT_UPPER_DEBOUNCE_SECONDS = 3
-UPPER_DEBOUNCE_MIN_SECONDS = 0
-UPPER_DEBOUNCE_MAX_SECONDS = 60
-CE_MIN_TOGGLE_INTERVAL_S = 0.5
 
+# Auto phase switching storage keys (internal)
+AUTO_STOP_REASON_BELOW_LOWER = "below_lower"
+AUTO_STATE_KEY_1P_TO_3P_SINCE = "auto_1p_to_3p_candidate_since_iso"
+AUTO_STATE_KEY_3P_TO_1P_SINCE = "auto_3p_to_1p_candidate_since_iso"
+AUTO_STATE_KEY_STOP_REASON = "auto_last_stop_reason"
+AUTO_STATE_KEY_STOP_TS = "auto_last_stop_ts_iso"
 
 def _effective_config(entry: ConfigEntry) -> dict:
     return {**entry.data, **entry.options}
@@ -175,7 +228,7 @@ class EVLoadController:
         self._profile_min_power_6a_w: int = int(
             profile_meta.get("min_power_6a_w", profile_meta["phase_voltage_v"] * 6 * (self._supply_phases if self._supply_phases > 1 else 1))
         )
-        self._profile_reg_min_w: int = int(profile_meta.get("regulation_min_w", 1300 if self._supply_phases == 1 else 4000))
+        self._profile_reg_min_w: int = int(profile_meta.get("regulation_min_w", 1300 if self._supply_phases == 1 else 3900))
         self._wallbox_three_phase: bool = bool(self._supply_phases == 3)
 
         # Hysteresis thresholds
@@ -202,6 +255,7 @@ class EVLoadController:
         self._planner_monitor_task: Optional[asyncio.Task] = None
         self._reclaim_task: Optional[asyncio.Task] = None
         self._relock_task: Optional[asyncio.Task] = None
+        self._relock_enabled: bool = False
 
         self._charging_active: bool = False
 
@@ -232,12 +286,64 @@ class EVLoadController:
         # Auto-unlock toggle
         self._auto_unlock_enabled: bool = True
 
-        # ---- charging_enable single-writer (minimal) ----
+        # Phase switching mode (persisted in unified store)
+        # Persist ALWAYS, but select entity is only created if CONF_PHASE_SWITCH_SUPPORTED is True.
+        self._phase_switch_auto_enabled: bool = False
+        self._phase_switch_forced_profile: str = PHASE_PROFILE_PRIMARY
+
+        # Phase switching: feedback + request runtime state
+        self._phase_feedback_entity: Optional[str] = eff.get(CONF_PHASE_MODE_FEEDBACK_SENSOR)
+        self._phase_feedback_value: str = "unknown"  # "1p" / "3p" / "unknown"
+        self._phase_status_value: str = "Unknown"    # "1p" / "3p" / "Switching to 1p/3p" / "Unknown"
+        self._phase_target: Optional[str] = None
+        self._phase_last_requested_target: Optional[str] = None
+        self._phase_last_request_ts: Optional[float] = None
+        self._phase_notify_active: bool = False
+
+        # Phase switching: cooldown (persisted, no queue)
+        self._phase_switch_lock: asyncio.Lock = asyncio.Lock()
+        self._phase_switch_in_progress: bool = False
+
+        # Wallclock UTC datetime (persisted via unified Store)
+        self._phase_cooldown_until_utc: Optional[datetime] = None
+        self._phase_cooldown_active_target: Optional[str] = None  # "1p"/"3p" for UI revert/context
+
+        # Phase switching: fallback
+        self._phase_fallback_active: bool = False
+        self._phase_fallback_timer_task: Optional[asyncio.Task] = None
+
+        # Auto phase switching (v1: stopped-based)
+        # persistent candidate timers (stored in unified Store as UTC ISO)
+        self._auto_1p_to_3p_candidate_since_utc: Optional[datetime] = None
+        self._auto_3p_to_1p_candidate_since_utc: Optional[datetime] = None
+
+        # reset debounce helpers (monotonic; NOT persisted)
+        self._auto_1p_to_3p_reset_since_ts: Optional[float] = None
+        self._auto_3p_to_1p_reset_since_ts: Optional[float] = None
+
+        # last stop reason latch (persisted)
+        self._auto_last_stop_reason: Optional[str] = None
+        self._auto_last_stop_ts_utc: Optional[datetime] = None
+
+        # charging_enable hard veto window during safe switching
+        self._ce_phase_veto_until_ts: float = 0.0
+
+        # charging_enable single-writer (minimal)
         self._ce_lock: asyncio.Lock = asyncio.Lock()
         self._ce_last_desired: Optional[bool] = None
         self._ce_last_write_ts: float = 0.0
 
-        # ---- External OFF detection and latch ----
+        # charging_enable retry (no-effect / sticky state handling)
+        self._ce_enable_retry_task: Optional[asyncio.Task] = None
+        self._ce_enable_retry_active: bool = False
+        self._ce_enable_retry_count: int = 0
+
+        # charging_enable retry OFF (ONLY for user Start/Stop OFF)
+        self._ce_disable_retry_task: Optional[asyncio.Task] = None
+        self._ce_disable_retry_active: bool = False
+        self._ce_disable_retry_count: int = 0
+
+        # External OFF detection and latch
         self._ce_last_intent_desired: Optional[bool] = None
         self._ce_last_intent_ts: float = 0.0
         self._ce_external_off_last_notify_ts: float = 0.0
@@ -246,6 +352,14 @@ class EVLoadController:
         self._ce_external_last_off_ts: Optional[float] = None
         self._ce_external_last_on_ts: Optional[float] = None
 
+        # Task tracking for cleanup
+        self._tracked_tasks: set[asyncio.Task] = set()
+
+        # State save debouncing
+        self._save_pending: bool = False
+        self._save_debounce_task: Optional[asyncio.Task] = None
+        self._save_debounce_delay: float = STATE_SAVE_DEBOUNCE_DELAY_S  # seconds
+
         # Restore external OFF/ON state from config entry options (survives reload + HA restart)
         with contextlib.suppress(Exception):
             self._ce_external_off_latched = bool(self.entry.options.get(OPT_EXTERNAL_OFF_LATCHED, False))
@@ -253,10 +367,7 @@ class EVLoadController:
             self._ce_external_last_on_ts = self.entry.options.get(OPT_EXTERNAL_LAST_ON_TS)
 
         if self._ce_external_off_latched:
-            _LOGGER.warning(
-                "EVCM: restored external OFF latch from previous run. entry=%s",
-                self.entry.entry_id
-            )
+            _LOGGER.warning("EVCM %s: restored external OFF latch from previous run", self._log_name())
 
         # Recreate persistent notifications after restart/reload (HA may not restore them)
         try:
@@ -343,14 +454,14 @@ class EVLoadController:
         def _cb():
             self._startup_grace_recheck_handle = None
             # run async reconcile in background
-            self.hass.async_create_task(self._after_startup_grace_reconcile())
+            self._create_task(self._after_startup_grace_reconcile())
 
         try:
             delay = float(UNKNOWN_STARTUP_GRACE_SECONDS) + 0.5
             self._startup_grace_recheck_handle = self.hass.loop.call_later(delay, _cb)
         except Exception:
             # fallback: run soon
-            self.hass.async_create_task(self._after_startup_grace_reconcile())
+            self._create_task(self._after_startup_grace_reconcile())
 
     async def _after_startup_grace_reconcile(self) -> None:
         """Run once after startup grace ends to avoid missing planner/export/SoC transitions."""
@@ -442,7 +553,7 @@ class EVLoadController:
             finally:
                 self._upper_timer_task = None
 
-        self._upper_timer_task = self.hass.async_create_task(_runner())
+        self._upper_timer_task = self._create_task(_runner())
 
     # ---------------- Post-start lock enforce (non-blocking wrapper) ----------------
     async def async_post_start(self):
@@ -454,19 +565,19 @@ class EVLoadController:
 
         # Run inner in background (never block HA startup)
         try:
-            self.hass.async_create_task(self._async_post_start_inner())
+            self._create_task(self._async_post_start_inner())
         except Exception:
             _LOGGER.debug("Failed to schedule _async_post_start_inner", exc_info=True)
 
         # Defer lock enforcement to avoid immediate I/O on startup
         def _schedule_lock_enforce():
             try:
-                self.hass.async_create_task(self._ensure_lock_locked())
+                self._create_task(self._ensure_lock_locked())
             except Exception:
                 _LOGGER.debug("Failed to schedule _ensure_lock_locked", exc_info=True)
 
         try:
-            self.hass.loop.call_later(5.0, _schedule_lock_enforce)
+            self.hass.loop.call_later(POST_START_LOCK_DELAY_S, _schedule_lock_enforce)
         except Exception:
             _schedule_lock_enforce()
 
@@ -475,7 +586,7 @@ class EVLoadController:
             self._install_midnight_daily_listener()
             return
         try:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + POST_START_LOCK_DELAY_S
             while time.monotonic() < deadline:
                 if self._cable_entity:
                     st_cable = self.hass.states.get(self._cable_entity)
@@ -572,9 +683,9 @@ class EVLoadController:
                 running_loop = None
 
             if running_loop is loop:
-                self.hass.async_create_task(_persist_and_notify())
+                self._create_task(_persist_and_notify())
             else:
-                loop.call_soon_threadsafe(lambda: self.hass.async_create_task(_persist_and_notify()))
+                loop.call_soon_threadsafe(lambda: self._create_task(_persist_and_notify()))
         except Exception:
             _LOGGER.debug("Failed to persist planner dates in a thread-safe manner", exc_info=True)
 
@@ -631,8 +742,12 @@ class EVLoadController:
             return
         self._unknown_last_emit[key] = now
         _LOGGER.warning(
-            "Unknown/unavailable: entity=%s state=%s context=%s%s entry=%s",
-            entity_id, raw_state, context, f":{side}" if side else "", self.entry.entry_id
+            "EVCM %s: Unknown/unavailable: entity=%s state=%s context=%s%s",
+            self._log_name(),
+            entity_id, 
+            raw_state, 
+            context, 
+            f":{side}" if side else ""
         )
 
     # ---------------- Persistence ----------------
@@ -663,6 +778,8 @@ class EVLoadController:
                 "net_power_target_w": int(target_opt) if isinstance(target_opt, (int, float)) else DEFAULT_NET_POWER_TARGET_W,
                 "auto_unlock_enabled": True,
                 "ext_import_limit_w": None,
+                CONF_PHASE_SWITCH_AUTO_ENABLED: False,
+                CONF_PHASE_SWITCH_FORCED_PROFILE: PHASE_PROFILE_PRIMARY,
             }
             await self._state_store.async_save(self._state)
         else:
@@ -696,6 +813,78 @@ class EVLoadController:
         except Exception:
             self._ext_import_limit_w = None
 
+        # Phase switching mode (stored)
+        try:
+            self._phase_switch_auto_enabled = bool(self._state.get(CONF_PHASE_SWITCH_AUTO_ENABLED, False))
+        except Exception:
+            self._phase_switch_auto_enabled = False
+
+        forced = self._state.get(CONF_PHASE_SWITCH_FORCED_PROFILE, PHASE_PROFILE_PRIMARY)
+        forced = str(forced) if forced is not None else PHASE_PROFILE_PRIMARY
+        if forced not in (PHASE_PROFILE_PRIMARY, PHASE_PROFILE_ALTERNATE):
+            forced = PHASE_PROFILE_PRIMARY
+        self._phase_switch_forced_profile = forced
+
+        # Phase switching cooldown (persisted)
+        try:
+            iso = self._state.get(OPT_PHASE_SWITCH_COOLDOWN_UNTIL_ISO)
+            if isinstance(iso, str) and iso.strip():
+                dt = dt_util.parse_datetime(iso)
+                # parse_datetime returns aware or naive; normalize to UTC aware
+                if dt is not None:
+                    dt_utc = dt_util.as_utc(dt) if dt.tzinfo else dt_util.as_utc(dt.replace(tzinfo=dt_util.UTC))
+                    self._phase_cooldown_until_utc = dt_utc
+                else:
+                    self._phase_cooldown_until_utc = None
+            else:
+                self._phase_cooldown_until_utc = None
+        except Exception:
+            self._phase_cooldown_until_utc = None
+
+        try:
+            tgt = self._state.get(OPT_PHASE_SWITCH_COOLDOWN_TARGET)
+            tgt = str(tgt).strip().lower() if tgt is not None else ""
+            self._phase_cooldown_active_target = tgt if tgt in ("1p", "3p") else None
+        except Exception:
+            self._phase_cooldown_active_target = None
+
+        # Auto switching timers (persisted)
+        try:
+            iso = self._state.get(AUTO_STATE_KEY_1P_TO_3P_SINCE)
+            if isinstance(iso, str) and iso.strip():
+                dt = dt_util.parse_datetime(iso)
+                self._auto_1p_to_3p_candidate_since_utc = dt_util.as_utc(dt) if dt else None
+            else:
+                self._auto_1p_to_3p_candidate_since_utc = None
+        except Exception:
+            self._auto_1p_to_3p_candidate_since_utc = None
+
+        try:
+            iso = self._state.get(AUTO_STATE_KEY_3P_TO_1P_SINCE)
+            if isinstance(iso, str) and iso.strip():
+                dt = dt_util.parse_datetime(iso)
+                self._auto_3p_to_1p_candidate_since_utc = dt_util.as_utc(dt) if dt else None
+            else:
+                self._auto_3p_to_1p_candidate_since_utc = None
+        except Exception:
+            self._auto_3p_to_1p_candidate_since_utc = None
+
+        try:
+            rsn = self._state.get(AUTO_STATE_KEY_STOP_REASON)
+            self._auto_last_stop_reason = str(rsn) if rsn is not None else None
+        except Exception:
+            self._auto_last_stop_reason = None
+
+        try:
+            iso = self._state.get(AUTO_STATE_KEY_STOP_TS)
+            if isinstance(iso, str) and iso.strip():
+                dt = dt_util.parse_datetime(iso)
+                self._auto_last_stop_ts_utc = dt_util.as_utc(dt) if dt else None
+            else:
+                self._auto_last_stop_ts_utc = None
+        except Exception:
+            self._auto_last_stop_ts_utc = None
+
         self._state_loaded = True
 
     async def _save_unified_state(self):
@@ -712,6 +901,23 @@ class EVLoadController:
             "net_power_target_w": self._net_power_target_w,
             "auto_unlock_enabled": bool(self._auto_unlock_enabled),
             "ext_import_limit_w": self._ext_import_limit_w if self._ext_import_limit_w is not None else None,
+            CONF_PHASE_SWITCH_AUTO_ENABLED: bool(self._phase_switch_auto_enabled),
+            CONF_PHASE_SWITCH_FORCED_PROFILE: self._phase_switch_forced_profile,
+
+            # Auto switching persistence
+            AUTO_STATE_KEY_1P_TO_3P_SINCE: (
+                self._auto_1p_to_3p_candidate_since_utc.isoformat()
+                if self._auto_1p_to_3p_candidate_since_utc else None
+            ),
+            AUTO_STATE_KEY_3P_TO_1P_SINCE: (
+                self._auto_3p_to_1p_candidate_since_utc.isoformat()
+                if self._auto_3p_to_1p_candidate_since_utc else None
+            ),
+            AUTO_STATE_KEY_STOP_REASON: self._auto_last_stop_reason,
+            AUTO_STATE_KEY_STOP_TS: (
+                self._auto_last_stop_ts_utc.isoformat()
+                if self._auto_last_stop_ts_utc else None
+            ),
         }
         _LOGGER.debug(
             "Persist planner datetimes: start=%s stop=%s (planner_enabled=%s)",
@@ -720,6 +926,29 @@ class EVLoadController:
         with contextlib.suppress(Exception):
             await self._state_store.async_save(to_save)
 
+    async def _save_unified_state_debounced(self) -> None:
+        """Save state with debouncing to avoid rapid consecutive writes."""
+        self._save_pending = True
+        
+        # If a debounce task is already scheduled, let it handle the save
+        if self._save_debounce_task and not self._save_debounce_task.done():
+            return
+        
+        async def _debounced_save():
+            try:
+                await asyncio.sleep(self._save_debounce_delay)
+                if self._save_pending:
+                    self._save_pending = False
+                    await self._save_unified_state()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _LOGGER.debug("Debounced save failed", exc_info=True)
+            finally:
+                self._save_debounce_task = None
+        
+        self._save_debounce_task = self._create_task(_debounced_save())
+        
     @staticmethod
     def _safe_int(v) -> Optional[int]:
         try:
@@ -755,7 +984,7 @@ class EVLoadController:
     def on_global_priority_changed(self):
         if not self._state_loaded:
             return
-        self.hass.async_create_task(self._refresh_priority_and_apply())
+        self._create_task(self._refresh_priority_and_apply())
 
     async def _refresh_priority_and_apply(self):
         await self._refresh_priority_mode_flag()
@@ -812,8 +1041,469 @@ class EVLoadController:
         self._auto_unlock_enabled = bool(enabled)
         if prev != self._auto_unlock_enabled:
             _LOGGER.debug("Auto unlock toggle → %s", self._auto_unlock_enabled)
-            self.hass.async_create_task(self._save_unified_state())
+            self._create_task(self._save_unified_state_debounced())
             self._notify_mode_listeners()
+
+    # ---------------- Phase switching: helpers ----------------
+    def _phase_switch_supported(self) -> bool:
+        eff = _effective_config(self.entry)
+        return bool(eff.get(CONF_PHASE_SWITCH_SUPPORTED, False))
+
+    def get_phase_switch_mode(self) -> str:
+        # We persist these always, but if feature is not enabled in config/options,
+        # we expose a safe effective mode: Force 3P.
+        if not self._phase_switch_supported():
+            return "Force 3p"
+
+        if self._phase_switch_auto_enabled:
+            return "Auto"
+
+        return "Force 1p" if self._phase_switch_forced_profile == PHASE_PROFILE_ALTERNATE else "Force 3p"
+
+    def set_phase_switch_auto_enabled(self, enabled: bool) -> None:
+        self._phase_switch_auto_enabled = bool(enabled)
+        self._create_task(self._save_unified_state_debounced())
+        self._reconcile_phase_feedback_notify()
+        self._notify_mode_listeners()
+
+    async def async_force_phase_profile(self, *, alternate: bool) -> None:
+        # Only stores user intent for now.
+        self._phase_switch_forced_profile = PHASE_PROFILE_ALTERNATE if alternate else PHASE_PROFILE_PRIMARY
+        self._create_task(self._save_unified_state_debounced())
+        self._reconcile_phase_feedback_notify()
+        self._notify_mode_listeners()
+
+    def _phase_cooldown_active(self) -> bool:
+        until = self._phase_cooldown_until_utc
+        return bool(until and dt_util.utcnow() < until)
+
+    def _phase_cooldown_remaining_s(self) -> int:
+        until = self._phase_cooldown_until_utc
+        if not until:
+            return 0
+        return max(0, int((until - dt_util.utcnow()).total_seconds()))
+
+    def _phase_expected_from_config(self) -> Optional[str]:
+        """Expected phase purely from stored forced mode (no active request)."""
+        if not self._phase_switch_supported():
+            return None
+
+        if self._phase_switch_auto_enabled:
+            return None
+
+        return "1p" if self._phase_switch_forced_profile == PHASE_PROFILE_ALTERNATE else "3p"
+
+    async def _persist_phase_cooldown_state(self) -> None:
+        """Persist cooldown wallclock timestamps in unified store."""
+        try:
+            # Ensure state loaded so self._state exists
+            await self._load_unified_state()
+
+            to_save = dict(self._state) if isinstance(self._state, dict) else {}
+            to_save[OPT_PHASE_SWITCH_COOLDOWN_UNTIL_ISO] = (
+                self._phase_cooldown_until_utc.isoformat() if self._phase_cooldown_until_utc else None
+            )
+            to_save[OPT_PHASE_SWITCH_COOLDOWN_TARGET] = self._phase_cooldown_active_target or None
+
+            await self._state_store.async_save(to_save)
+            self._state = to_save
+        except Exception:
+            _LOGGER.debug("Failed to persist phase cooldown state", exc_info=True)
+
+    def _notify_phase_switch_cooldown_active(self) -> None:
+        """User-facing notification when a request is rejected due to cooldown."""
+        try:
+            device_name = self._device_name_for_notify()
+            timeout_s = int(float(PHASE_SWITCH_COOLDOWN_SECONDS))
+            if timeout_s % 60 == 0:
+                dur = f"{timeout_s // 60} minute(s)"
+            else:
+                dur = f"{timeout_s} seconds"
+            msg = (
+                f"Phase switching cooldown active for {device_name}\n\n"
+                f"For safety, phase switching is locked for up to {dur} "
+                "after a request.\n"
+                "Please try again after the cooldown.\n"
+                "This message will disappear when the cooldown ends."
+            )
+
+            # Create notification
+            self._notify_persistent_fire_and_forget(
+                "EVCM: Phase switching cooldown active",
+                msg,
+                self._phase_cooldown_notification_id(),
+            )
+
+            # Auto-dismiss when cooldown ends
+            remaining = self._phase_cooldown_remaining_s()
+            if remaining > 0:
+                async def _auto_dismiss():
+                    await asyncio.sleep(float(remaining) + 1.0)
+                    if not self._phase_cooldown_active():
+                        await self._dismiss_phase_switch_cooldown()
+                self._create_task(_auto_dismiss())
+
+        except Exception:
+            _LOGGER.debug("Failed to create phase cooldown notification", exc_info=True)
+
+    def _phase_notify_problem_active(self) -> bool:
+        new_val = self._phase_feedback_value
+
+        expected_request = (self._phase_target or self._phase_last_requested_target or "").strip().lower()
+        expected_config = (self._phase_expected_from_config() or "").strip().lower()
+
+        if expected_request not in ("1p", "3p"):
+            expected_request = ""
+        if expected_config not in ("1p", "3p"):
+            expected_config = ""
+
+        # Unknown feedback -> problem
+        if new_val not in ("1p", "3p"):
+            return True
+
+        # Request expectation has priority
+        if expected_request:
+            return new_val != expected_request
+
+        # Otherwise check forced-config expectation (only if it exists)
+        if expected_config:
+            return new_val != expected_config
+
+        # No expectation and feedback is known -> OK
+        return False
+
+    def _reconcile_phase_feedback_notify(self) -> None:
+        """Start/cancel the delayed 'phase feedback uncertain' notify timer based on current state.
+
+        - Starts timer if a problem is active and no timer is running.
+        - Cancels timer + dismisses notification if problem is not active.
+        - Does NOT restart timer if already running (as requested).
+        """
+        problem = self._phase_notify_problem_active()
+
+        # If everything is OK -> cancel timer & dismiss notification
+        if not problem:
+            self._phase_notify_active = False
+            self._cancel_phase_fallback_timer()
+            self._create_task(self._dismiss_phase_feedback_uncertain())
+            return
+
+        # Problem is active
+        self._phase_notify_active = True
+
+        # Start timer only if not already running
+        if self._phase_fallback_timer_task is None or self._phase_fallback_timer_task.done():
+            self._start_phase_fallback_timer()
+
+    def _phase_cooldown_notification_id(self) -> str:
+        return f"evcm_phase_switch_cooldown_{self.entry.entry_id}"
+
+    async def _dismiss_phase_switch_cooldown(self) -> None:
+        await self._dismiss_persistent(self._phase_cooldown_notification_id())
+
+    # ---------------- External OFF notification helpers ----------------
+    def _external_off_notification_id(self) -> str:
+        return f"evcm_external_off_{self.entry.entry_id}"
+
+    def _external_on_notification_id(self) -> str:
+        return f"evcm_external_on_{self.entry.entry_id}"
+
+    async def _dismiss_external_off_notification(self) -> None:
+        await self._dismiss_persistent(self._external_off_notification_id())
+
+    async def _dismiss_external_on_notification(self) -> None:
+        await self._dismiss_persistent(self._external_on_notification_id())
+
+    # ---------------- Phase switching: status getters ----------------
+    def get_phase_status_value(self) -> str:
+        return self._phase_status_value
+
+    def get_phase_status_attrs(self) -> dict:
+        mismatch = bool(
+            self._phase_target in ("1p", "3p")
+            and self._phase_feedback_value in ("1p", "3p")
+            and self._phase_feedback_value != self._phase_target
+        )
+
+        return {
+            "mismatch": mismatch,
+            "fallback_active": bool(self._phase_fallback_active),
+            "cooldown_active": self._phase_cooldown_active(),
+            "cooldown_remaining_s": self._phase_cooldown_remaining_s(),
+        }
+
+    def _phase_uncertain_notification_id(self) -> str:
+        return f"evcm_phase_feedback_uncertain_{self.entry.entry_id}"
+
+    def _notify_phase_feedback_uncertain(self) -> None:
+        try:
+            device_name = self._device_name_for_notify()
+            timeout_s = int(float(PHASE_SWITCH_REQUEST_FEEDBACK_TIMEOUT_S))
+            if timeout_s % 60 == 0:
+                dur = f"{timeout_s // 60} minute(s)"
+            else:
+                dur = f"{timeout_s} seconds"
+            auto_note = ""
+            if self._phase_switch_auto_enabled:
+                auto_note = "\n\nAuto phase switching is disabled while phase feedback is unknown."
+
+            msg = (
+                f"Phase feedback uncertain for {device_name}\n\n"
+                f"Phase feedback has been unknown or inconsistent for more than {dur}.\n"
+                "EVCM will operate with conservative assumptions until feedback becomes available."
+                f"{auto_note}"
+            )
+            self._notify_persistent_fire_and_forget(
+                "EVCM: Phase feedback uncertain",
+                msg,
+                self._phase_uncertain_notification_id(),
+            )
+        except Exception:
+            _LOGGER.debug("Failed to create phase feedback uncertain notification", exc_info=True)
+
+    async def _dismiss_phase_feedback_uncertain(self) -> None:
+        await self._dismiss_persistent(self._phase_uncertain_notification_id())
+
+    def _cancel_phase_fallback_timer(self) -> None:
+        t = self._phase_fallback_timer_task
+        self._phase_fallback_timer_task = None
+        if t and not t.done():
+            t.cancel()
+
+    def _start_phase_fallback_timer(self) -> None:
+        """Start delayed notify when we enter fallback; notify only if still in fallback after timeout."""
+        self._cancel_phase_fallback_timer()
+
+        async def _runner():
+            try:
+                # Wait AFTER grace has ended (if grace is active when we start)
+                # If grace is currently active, we just wait the remaining grace first.
+                try:
+                    # remaining grace (best-effort)
+                    remaining_grace = max(
+                        0.0,
+                        float(UNKNOWN_STARTUP_GRACE_SECONDS)
+                        - (dt_util.utcnow() - self._startup_ts).total_seconds(),
+                    )
+                except Exception:
+                    remaining_grace = 0.0
+
+                if remaining_grace > 0:
+                    await asyncio.sleep(remaining_grace)
+
+                # Now start the real fallback notify delay
+                await asyncio.sleep(float(PHASE_SWITCH_REQUEST_FEEDBACK_TIMEOUT_S))
+
+                # Only notify if the problem is STILL active (unknown OR mismatch)
+                if self._phase_notify_problem_active():
+                    self._notify_phase_feedback_uncertain()
+                    self._notify_mode_listeners()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _LOGGER.debug("Phase fallback timer failed", exc_info=True)
+            finally:
+                self._phase_fallback_timer_task = None
+
+        self._phase_fallback_timer_task = self._create_task(_runner())
+
+    def _parse_phase_feedback(self, raw_state) -> str:
+        s = str(raw_state or "").strip().lower()
+        if s == "1p":
+            return "1p"
+        if s == "3p":
+            return "3p"
+        # Treat anything else (including 'unavailable') as unknown
+        return "unknown"
+
+    @callback
+    def _async_phase_feedback_event(self, event: Event):
+        new = event.data.get("new_state")
+
+        # Normalize new feedback
+        if not self._is_known_state(new):
+            new_val = "unknown"
+        else:
+            new_val = self._parse_phase_feedback(getattr(new, "state", None))
+
+        # No change -> nothing to do
+        if new_val == self._phase_feedback_value:
+            return
+
+        # Update feedback
+        self._phase_feedback_value = new_val
+
+        # Determine mismatch vs expected request target (only if we have a target)
+        mismatch = (
+            self._phase_target in ("1p", "3p")
+            and new_val in ("1p", "3p")
+            and new_val != self._phase_target
+        )
+
+        # Fallback/problem active if unknown OR mismatch
+        self._phase_fallback_active = (new_val not in ("1p", "3p")) or mismatch
+
+        # UI status update
+        if new_val in ("1p", "3p"):
+            self._phase_status_value = new_val
+        else:
+            # Only show Unknown if we are not actively switching
+            if self._phase_target is None:
+                self._phase_status_value = "Unknown"
+
+        # Sync notification timer with current problem state (unknown OR mismatch)
+        self._reconcile_phase_feedback_notify()
+
+        # If feedback now matches what we expected, clear the pending request markers
+        expected_request = (self._phase_target or self._phase_last_requested_target or "").strip().lower()
+        if expected_request in ("1p", "3p") and new_val == expected_request:
+            self._phase_target = None
+            self._phase_last_requested_target = None
+            self._phase_last_request_ts = None
+
+            # Now that mismatch can be resolved, sync timer/notification again
+            self._reconcile_phase_feedback_notify()
+
+        # Apply control changes
+        self._create_task(self._hysteresis_apply())
+        self._start_regulation_loop_if_needed()
+        self._notify_mode_listeners()
+        self._create_task(self._auto_evaluate_and_maybe_switch())
+
+    async def async_request_phase_switch(self, *, target: str, source: str) -> bool:
+        target_norm = str(target).strip().lower()
+        
+        _LOGGER.debug("EVCM %s: async_request_phase_switch called - target=%s, feedback=%s, in_progress=%s, phase_target=%s", 
+            self._log_name(), target_norm, self._phase_feedback_value, self._phase_switch_in_progress, self._phase_target)
+        
+        if target_norm not in ("1p", "3p"):
+            return False
+
+        if not self._phase_switch_supported():
+            _LOGGER.debug("EVCM %s: Phase switch request ignored (feature disabled)", self._log_name())
+            return False
+
+        # Quick reject if switch already in progress (don't wait for lock)
+        if self._phase_switch_in_progress or self._phase_target is not None:
+            _LOGGER.debug("EVCM %s: Phase switch request rejected (switch in progress to %s)", self._log_name(), self._phase_target)
+            self._notify_phase_switch_cooldown_active()
+            return False
+
+        # NOOP: already in requested phase (confirmed by feedback)
+        if self._phase_feedback_value in ("1p", "3p") and self._phase_feedback_value == target_norm:
+            _LOGGER.debug("EVCM %s: Phase switch NOOP - feedback already matches target=%s", 
+                self._log_name(), target_norm)
+            # Ensure UI status is clean
+            self._phase_target = None
+            self._phase_last_requested_target = None
+            self._phase_last_request_ts = None
+            self._phase_status_value = self._phase_feedback_value
+            self._reconcile_phase_feedback_notify()
+            self._notify_mode_listeners()
+            return True
+
+        async with self._phase_switch_lock:
+            if self._phase_cooldown_active():
+                # Reject: cooldown is active (no queue)
+                self._notify_phase_switch_cooldown_active()
+
+                # Optional: show a clean status; keep actual phase status if known
+                if self._phase_target is None:
+                    if self._phase_feedback_value in ("1p", "3p"):
+                        self._phase_status_value = self._phase_feedback_value
+                    else:
+                        self._phase_status_value = "Cooldown active"
+
+                self._notify_mode_listeners()
+                return False
+
+            # Accept: start cooldown NOW (persisted)
+            self._phase_cooldown_until_utc = dt_util.utcnow() + timedelta(seconds=int(PHASE_SWITCH_COOLDOWN_SECONDS))
+            self._phase_cooldown_active_target = target_norm
+            self._create_task(self._persist_phase_cooldown_state())
+            self._phase_target = target_norm
+            self._phase_last_requested_target = target_norm
+            self._phase_last_request_ts = time.monotonic()
+            self._phase_switch_in_progress = True
+            self._reconcile_phase_feedback_notify()
+
+            _LOGGER.debug("EVCM %s: Phase switch request accepted, in_progress=%s, cooldown_active=%s, target=%s", 
+                self._log_name(), 
+                self._phase_switch_in_progress, 
+                self._phase_cooldown_active(),
+                target_norm
+            )
+
+        # From here on, ensure we clear _phase_switch_in_progress on any exit
+        try:
+            # Mark pending request immediately
+            self._phase_target = target_norm
+            self._phase_status_value = f"Switching to {target_norm}"
+            self._notify_mode_listeners()
+
+            # Stop loops/timers to avoid interference while stopping charge
+            self._stop_regulation_loop()
+            self._stop_resume_monitor()
+            self._cancel_upper_timer()
+
+            # Ensure charging is OFF and reset current to 6A (best effort)
+            await self._ensure_charging_enable_off()
+            if self._current_setting_entity:
+                with contextlib.suppress(Exception):
+                    await self._set_current_setting_a(MIN_CURRENT_A)
+
+            # Wait for power down unless cable disconnected
+            if self._is_cable_connected():
+                ok = await self._phase_wait_for_power_stopped()
+                if not ok:
+                    self._phase_target = None
+                    self._phase_status_value = "Unknown"
+                    self._notify_phase_feedback_uncertain()
+                    self._notify_mode_listeners()
+                    return False
+
+            # Re-anchor/extend cooldown at actual switching moment (never shorten)
+            async with self._phase_switch_lock:
+                new_until = dt_util.utcnow() + timedelta(seconds=int(PHASE_SWITCH_COOLDOWN_SECONDS))
+                if self._phase_cooldown_until_utc is None or new_until > self._phase_cooldown_until_utc:
+                    self._phase_cooldown_until_utc = new_until
+                    self._phase_cooldown_active_target = target_norm
+                    self._create_task(self._persist_phase_cooldown_state())
+
+            # Fire request event for user's automation
+            self.hass.bus.async_fire(
+                PHASE_SWITCH_REQUEST_EVENT,
+                {
+                    "entry_id": self.entry.entry_id,
+                    "target": target_norm,
+                    "source": str(source),
+                },
+            )
+
+            # Short safety veto after command moment
+            self._ce_phase_veto_until_ts = time.monotonic() + float(PHASE_SWITCH_CE_VETO_SECONDS_DEFAULT)
+
+            # After veto ends, resume normal control logic
+            self._schedule_phase_post_veto_reconcile()
+
+            return True
+
+        finally:
+            self._phase_switch_in_progress = False
+
+    async def _phase_wait_for_power_stopped(self) -> bool:
+        threshold = float(PHASE_SWITCH_STOPPED_POWER_W_DEFAULT)
+        deadline = time.monotonic() + float(PHASE_SWITCH_WAIT_FOR_STOP_SECONDS_DEFAULT)
+
+        while time.monotonic() < deadline:
+            if not self._is_cable_connected():
+                return True
+            pw = self._get_charge_power_w()
+            if pw is not None and pw <= threshold:
+                return True
+            await asyncio.sleep(LOCK_WAIT_POLL_INTERVAL_S)
+
+        return False
 
     # ---------------- Planner persist helpers ----------------
     async def async_set_planner_start_dt_persist(self, dt: Optional[datetime]):
@@ -859,6 +1549,10 @@ class EVLoadController:
         return str(st.state).strip().lower() == "unlocked"
 
     async def _ensure_lock_locked(self):
+        # Policy: never force-lock while cable is connected; only lock on disconnect.
+        # This keeps charging/retries unaffected during runtime and after HA restart.
+        if self._is_cable_connected():
+            return
         if not self._lock_entity:
             return
         st = self.hass.states.get(self._lock_entity)
@@ -873,7 +1567,7 @@ class EVLoadController:
         except Exception:
             _LOGGER.debug("Failed to lock entity %s", self._lock_entity, exc_info=True)
 
-    async def _ensure_unlocked_for_start(self, timeout_s: float = 5.0) -> bool:
+    async def _ensure_unlocked_for_start(self, timeout_s: float = UNLOCK_TIMEOUT_S) -> bool:
         if not self._lock_entity:
             return True
         if self._is_lock_unlocked():
@@ -889,11 +1583,11 @@ class EVLoadController:
         except Exception:
             _LOGGER.debug("Failed to call lock.unlock for %s", self._lock_entity, exc_info=True)
             return False
-        deadline = time.monotonic() + max(0.5, float(timeout_s))
+        deadline = time.monotonic() + max(LOCK_WAIT_POLL_INTERVAL_S, float(timeout_s))
         while time.monotonic() < deadline:
             if self._is_lock_unlocked():
                 return True
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(LOCK_WAIT_POLL_INTERVAL_S)
         _LOGGER.info("Unlock timeout: lock stayed locked after %.1fs", timeout_s)
         return False
 
@@ -914,32 +1608,34 @@ class EVLoadController:
     def _charging_detected_now(self) -> bool:
         status_ok = self._is_status_charging()
         power = self._get_charge_power_w()
-        return bool(status_ok or (power is not None and power > 100))
+        return bool(status_ok or (power is not None and power > CHARGING_POWER_THRESHOLD_W))
 
-    async def _wait_for_charging_detection(self, timeout_s: float = 5.0) -> bool:
-        deadline = time.monotonic() + max(0.5, float(timeout_s))
+    async def _wait_for_charging_detection(self, timeout_s: float = CHARGING_WAIT_TIMEOUT_S) -> bool:
+        deadline = time.monotonic() + max(LOCK_WAIT_POLL_INTERVAL_S, float(timeout_s))
         while time.monotonic() < deadline:
             if not self._is_cable_connected():
                 return False
             if self._charging_detected_now():
                 return True
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(LOCK_WAIT_POLL_INTERVAL_S)
         return False
 
     def _schedule_relock_after_charging_start(self, already_detected: bool = False):
+        if not getattr(self, "_relock_enabled", False):
+            return
         self._cancel_relock_task()
 
         async def _runner():
             try:
                 if not already_detected:
-                    deadline = time.monotonic() + 120.0
+                    deadline = time.monotonic() + CHARGING_DETECTION_TIMEOUT_S
                     while time.monotonic() < deadline:
                         if not self._is_cable_connected():
                             _LOGGER.debug("Relock monitor aborted: cable disconnected")
                             return
                         status = self._get_wallbox_status()
                         power = self._get_charge_power_w()
-                        if self._is_status_charging() or (power is not None and power > 100):
+                        if self._is_status_charging() or (power is not None and power > CHARGING_POWER_THRESHOLD_W):
                             _LOGGER.debug(
                                 "Relock monitor: charging detected via %s (status=%s, power=%s)",
                                 "status" if self._is_status_charging() else "power", status, power
@@ -959,7 +1655,269 @@ class EVLoadController:
             finally:
                 self._relock_task = None
 
-        self._relock_task = self.hass.async_create_task(_runner())
+        self._relock_task = self._create_task(_runner())
+
+    # ---------------- Auto phase switching (v1: stopped-based) ----------------
+    def _auto_delay_seconds(self) -> int:
+        eff = _effective_config(self.entry)
+        try:
+            v = int(eff.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
+        except Exception:
+            v = DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN
+        v = max(AUTO_PHASE_SWITCH_DELAY_MIN_MIN, min(AUTO_PHASE_SWITCH_DELAY_MIN_MAX, v))
+        return int(v * 60)
+
+    def _auto_clear_candidate_1p_to_3p(self) -> None:
+        self._auto_1p_to_3p_candidate_since_utc = None
+        self._auto_1p_to_3p_reset_since_ts = None
+
+    def _auto_clear_candidate_3p_to_1p(self) -> None:
+        self._auto_3p_to_1p_candidate_since_utc = None
+        self._auto_3p_to_1p_reset_since_ts = None
+
+    def _auto_set_stop_reason_below_lower(self) -> None:
+        self._auto_last_stop_reason = AUTO_STOP_REASON_BELOW_LOWER
+        self._auto_last_stop_ts_utc = dt_util.utcnow()
+        self._create_task(self._save_unified_state_debounced())
+
+    def _auto_clear_stop_reason(self) -> None:
+        if self._auto_last_stop_reason is not None or self._auto_last_stop_ts_utc is not None:
+            self._auto_last_stop_reason = None
+            self._auto_last_stop_ts_utc = None
+            self._create_task(self._save_unified_state_debounced())
+
+    def _auto_blocked(self) -> bool:
+        # Feature gating
+        if not self._phase_switch_supported():
+            return True
+
+        # Auto only runs if user selected Auto in the select entity (persisted flag)
+        if not bool(self._phase_switch_auto_enabled):
+            return True
+
+        # Start/Stop must be ON (otherwise we should not act at all)
+        if not self.get_mode(MODE_START_STOP):
+            return True
+
+        # Must be connected (avoid switching while unplugged)
+        if not self._is_cable_connected():
+            return True
+
+        # "May I charge?" gating: if charging is not allowed, do not phase switch
+        # (minimize switching and avoid cooldown usage while planner/SoC/priority/missing data blocks charging)
+        if not self._planner_window_allows_start():
+            return True
+        if not self._soc_allows_start():
+            return True
+        if not self._priority_allowed_cache:
+            return True
+        if not self._essential_data_available():
+            return True
+
+        # unknown feedback OR fallback => no auto
+        if self._phase_feedback_value not in ("1p", "3p"):
+            return True
+        if bool(self._phase_fallback_active):
+            return True
+
+        # cooldown/switch in progress
+        if self._phase_cooldown_active():
+            return True
+        if self._phase_target is not None:
+            return True
+
+        return False
+
+    def _auto_upper_3p(self) -> float:
+        eff = _effective_config(self.entry)
+        if self.get_mode(MODE_ECO):
+            return float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
+        return float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
+
+    def _auto_upper_alt(self) -> float:
+        eff = _effective_config(self.entry)
+        if self.get_mode(MODE_ECO):
+            return float(eff.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))
+        return float(eff.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))
+
+    def _auto_is_at_max_current(self, current_a: Optional[int]) -> bool:
+        if current_a is None:
+            return False
+        conf_max = self._max_current_a()
+        return int(current_a) >= int(conf_max)
+
+    def _auto_candidate_update(
+        self,
+        *,
+        active: bool,
+        since_utc: Optional[datetime],
+        reset_since_ts: Optional[float],
+    ) -> tuple[Optional[datetime], Optional[float], bool]:
+        """Debounced candidate timer update (T_reset=180s)."""
+        now_mono = time.monotonic()
+        changed = False
+
+        if active:
+            if reset_since_ts is not None:
+                reset_since_ts = None
+                changed = True
+            if since_utc is None:
+                since_utc = dt_util.utcnow()
+                changed = True
+            return since_utc, reset_since_ts, changed
+
+        # Not active
+        if since_utc is None:
+            if reset_since_ts is not None:
+                reset_since_ts = None
+                changed = True
+            return None, reset_since_ts, changed
+
+        if reset_since_ts is None:
+            reset_since_ts = now_mono
+            changed = True
+            return since_utc, reset_since_ts, changed
+
+        if (now_mono - float(reset_since_ts)) >= float(AUTO_RESET_DEBOUNCE_SECONDS):
+            since_utc = None
+            reset_since_ts = None
+            changed = True
+
+        return since_utc, reset_since_ts, changed
+
+    def _auto_elapsed_ok(self, since_utc: Optional[datetime]) -> bool:
+        if not since_utc:
+            return False
+        try:
+            return (dt_util.utcnow() - since_utc).total_seconds() >= float(self._auto_delay_seconds())
+        except Exception:
+            return False
+
+    async def _auto_evaluate_and_maybe_switch(self) -> None:
+        """Evaluate stopped-based Auto switching (persistent timers)."""
+        try:
+            if self._auto_blocked():
+                self._auto_clear_candidate_1p_to_3p()
+                self._auto_clear_candidate_3p_to_1p()
+                self._create_task(self._save_unified_state_debounced())
+                return
+
+            net = self._get_net_power_w()
+            chg = self._get_charge_power_w()
+            cur_a = await self._get_current_setting_a()
+
+            # 1p -> 3p: max current + headroom >= upper_3p + margin
+            headroom = None
+            if net is not None and chg is not None:
+                headroom = float(net) + float(chg)
+
+            cond_1p_to_3p = (
+                self._phase_feedback_value == "1p"
+                and self.get_mode(MODE_START_STOP)
+                and self._is_cable_connected()
+                and self._auto_is_at_max_current(cur_a)
+                and headroom is not None
+                and headroom >= (self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W))
+            )
+
+            new_since, new_reset, changed = self._auto_candidate_update(
+                active=bool(cond_1p_to_3p),
+                since_utc=self._auto_1p_to_3p_candidate_since_utc,
+                reset_since_ts=self._auto_1p_to_3p_reset_since_ts,
+            )
+            self._auto_1p_to_3p_candidate_since_utc = new_since
+            self._auto_1p_to_3p_reset_since_ts = new_reset
+
+            if changed:
+                self._create_task(self._save_unified_state_debounced())
+
+            if self._auto_elapsed_ok(self._auto_1p_to_3p_candidate_since_utc):
+                ok = await self.async_request_phase_switch(
+                    target="3p",
+                    source=PHASE_SWITCH_SOURCE_AUTO,
+                )
+                self._auto_clear_candidate_1p_to_3p()
+                self._create_task(self._save_unified_state_debounced())
+                if ok:
+                    return
+
+            # 3p -> 1p: stopped by below_lower + net >= upper_alt
+            charging_enabled = self._is_charging_enabled()
+            stop_reason_ok = (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
+            net_ok_for_1p_start = (net is not None and net >= self._auto_upper_alt())
+
+            # If charging can resume now (or is already above upper), resuming has priority over switching to 1p.
+            resume_has_priority = False
+            try:
+                if (
+                    self.get_mode(MODE_START_STOP)
+                    and self._is_cable_connected()
+                    and (not charging_enabled)
+                    and self._planner_window_allows_start()
+                    and self._soc_allows_start()
+                    and self._priority_allowed_cache
+                    and self._essential_data_available()
+                    and net is not None
+                ):
+                    # "Can resume now" OR "above upper (debounce pending)" => don't switch
+                    if self._sustained_above_upper(net) or (net >= self._current_upper()):
+                        resume_has_priority = True
+            except Exception:
+                resume_has_priority = False
+
+            if resume_has_priority:
+                # Clear any pending 3p->1p candidate so it cannot fire on this event.
+                if (
+                    self._auto_3p_to_1p_candidate_since_utc is not None
+                    or self._auto_3p_to_1p_reset_since_ts is not None
+                ):
+                    self._auto_clear_candidate_3p_to_1p()
+                    self._create_task(self._save_unified_state_debounced())
+                # Do not attempt auto 3p->1p switching on this tick.
+                return
+
+            cond_3p_to_1p = (
+                self._phase_feedback_value == "3p"
+                and self.get_mode(MODE_START_STOP)
+                and self._is_cable_connected()
+                and (not charging_enabled)
+                and stop_reason_ok
+                and net_ok_for_1p_start
+            )
+
+            # IMPORTANT: for 3p->1p we want "continuous true for delay",
+            # so reset immediately when the condition is not active.
+            changed = False
+            if cond_3p_to_1p:
+                if self._auto_3p_to_1p_candidate_since_utc is None:
+                    self._auto_3p_to_1p_candidate_since_utc = dt_util.utcnow()
+                    self._auto_3p_to_1p_reset_since_ts = None
+                    changed = True
+            else:
+                if (
+                    self._auto_3p_to_1p_candidate_since_utc is not None
+                    or self._auto_3p_to_1p_reset_since_ts is not None
+                ):
+                    self._auto_clear_candidate_3p_to_1p()
+                    changed = True
+
+            if changed:
+                self._create_task(self._save_unified_state_debounced())
+
+            if self._auto_elapsed_ok(self._auto_3p_to_1p_candidate_since_utc):
+                ok = await self.async_request_phase_switch(
+                    target="1p",
+                    source=PHASE_SWITCH_SOURCE_AUTO,
+                )
+                self._auto_clear_candidate_3p_to_1p()
+                self._create_task(self._save_unified_state_debounced())
+                if ok:
+                    return
+
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _LOGGER.debug("Auto phase switch evaluate failed", exc_info=True)
 
     # ---------------- Net power target ----------------
     @property
@@ -974,7 +1932,7 @@ class EVLoadController:
         iv = max(-50000, min(50000, iv))
         if iv != self._net_power_target_w:
             self._net_power_target_w = iv
-            self.hass.async_create_task(self._save_unified_state())
+            self._create_task(self._save_unified_state_debounced())
             _LOGGER.info("Net power target updated → %s W", iv)
 
     # ---------------- Planner / SoC getters-setters ----------------
@@ -998,8 +1956,8 @@ class EVLoadController:
                 self._soc_limit_percent = max(0, min(100, int(round(float(percent)))))
             except Exception:
                 self._soc_limit_percent = None
-        self.hass.async_create_task(self._save_unified_state())
-        self.hass.async_create_task(self._hysteresis_apply())
+        self._create_task(self._save_unified_state_debounced())
+        self._create_task(self._hysteresis_apply())
 
     # ---------------- Mode listeners ----------------
     def add_mode_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
@@ -1066,7 +2024,7 @@ class EVLoadController:
 
     # ---------------- Supply minima ----------------
     def _effective_regulation_min_power(self) -> int:
-        return self._profile_reg_min_w or (4000 if self._supply_phases == 3 else 1300)
+        return self._profile_reg_min_w or (3900 if self._supply_phases == 3 else 1300)
 
     def _effective_min_charge_power(self) -> int:
         base = self._profile_min_power_6a_w
@@ -1075,11 +2033,12 @@ class EVLoadController:
     # ---------------- Initialization / Shutdown ----------------
     async def async_initialize(self):
         await self._load_unified_state()
+        self._cancel_relock_task()
 
         # Backfill default SoC limit for older entries that had no value
         if self._soc_limit_percent is None:
             self._soc_limit_percent = DEFAULT_SOC_LIMIT_PERCENT
-            self.hass.async_create_task(self._save_unified_state())
+            self._create_task(self._save_unified_state_debounced())
 
         await self._refresh_priority_mode_flag()
         self._priority_allowed_cache = await self._is_priority_allowed()
@@ -1098,19 +2057,21 @@ class EVLoadController:
                 EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
             )
             self._ha_started_listener_active = True
+        self._create_task(self._auto_evaluate_and_maybe_switch())
 
     async def _on_ha_started(self, _event):
         self._ha_started_listener_active = False
         self._started_unsub = None
+        self._cancel_relock_task()
 
         # Defer all heavy/event-driven work a bit to let HA finalize startup
-        self.hass.async_create_task(self._late_start_after_ha_started())
+        self._create_task(self._late_start_after_ha_started())
 
         # Install midnight listener and start monitors after HA is running
         self._install_midnight_daily_listener()
         # Schedule potentially blocking routines
-        self.hass.async_create_task(self._enforce_start_stop_policy())
-        self.hass.async_create_task(self._apply_cable_state_initial())
+        self._create_task(self._enforce_start_stop_policy())
+        self._create_task(self._apply_cable_state_initial())
         self._start_planner_monitor_if_needed()
         if self._priority_allowed_cache:
             self._start_regulation_loop_if_needed()
@@ -1120,11 +2081,11 @@ class EVLoadController:
 
     async def _late_start_after_ha_started(self) -> None:
         # Small minimum delay: give HA a breath even on fast systems
-        await asyncio.sleep(5)
+        await asyncio.sleep(LATE_START_INITIAL_DELAY_S)
 
         # Wait until MQTT entities are actually available/known (bounded)
         ready_ids = self._startup_ready_entity_ids()
-        timeout_s = 180.0
+        timeout_s = MQTT_READY_TIMEOUT_S
         deadline = time.monotonic() + timeout_s
         last_log = 0.0
 
@@ -1147,8 +2108,8 @@ class EVLoadController:
         # Now start the integration work
         self._install_midnight_daily_listener()
         self._subscribe_listeners()
-        self.hass.async_create_task(self._enforce_start_stop_policy())
-        self.hass.async_create_task(self._apply_cable_state_initial())
+        self._create_task(self._enforce_start_stop_policy())
+        self._create_task(self._apply_cable_state_initial())
         self._start_planner_monitor_if_needed()
         if self._priority_allowed_cache:
             self._start_regulation_loop_if_needed()
@@ -1157,8 +2118,20 @@ class EVLoadController:
         self._schedule_startup_grace_recheck()
 
     async def async_shutdown(self):
+        # Cancel all tracked background tasks first
+        cancelled_count = self._cancel_tracked_tasks()
+        # Cancel pending debounced save
+        if self._save_debounce_task and not self._save_debounce_task.done():
+            self._save_debounce_task.cancel()
+        self._save_debounce_task = None
+        if cancelled_count > 0:
+            _LOGGER.debug("EVCM %s: cancelled %d tracked tasks on shutdown", self._log_name(), cancelled_count)
+
         self._cancel_auto_connect_task()
         self._stop_regulation_loop()
+        self._cancel_phase_fallback_timer()
+        self._cancel_ce_enable_retry()
+        self._cancel_ce_disable_retry()
         for t in [self._resume_task, self._planner_monitor_task, self._below_lower_task, self._no_data_task, self._reclaim_task, self._relock_task, self._upper_timer_task]:
             if t and not t.done():
                 t.cancel()
@@ -1191,6 +2164,7 @@ class EVLoadController:
             with contextlib.suppress(Exception):
                 unsub()
         self._unsub_listeners = []
+
         if self._cable_entity:
             self._unsub_listeners.append(async_track_state_change_event(self.hass, self._cable_entity, self._async_cable_event))
         if self._charging_enable_entity:
@@ -1211,6 +2185,36 @@ class EVLoadController:
         if self._ev_soc_entity:
             self._unsub_listeners.append(async_track_state_change_event(self.hass, self._ev_soc_entity, self._async_ev_soc_event))
 
+        if self._phase_feedback_entity:
+            self._unsub_listeners.append(
+                async_track_state_change_event(self.hass, self._phase_feedback_entity, self._async_phase_feedback_event)
+            )
+
+            # Prime phase feedback state immediately (otherwise we only update on change events)
+            st = self.hass.states.get(self._phase_feedback_entity)
+            if self._is_known_state(st):
+                self._phase_feedback_value = self._parse_phase_feedback(getattr(st, "state", None))
+            else:
+                self._phase_feedback_value = "unknown"
+
+            if self._phase_feedback_value in ("1p", "3p"):
+                self._phase_status_value = self._phase_feedback_value
+            else:
+                if self._phase_target is None:
+                    self._phase_status_value = "Unknown"
+
+            # fallback is active when unknown OR mismatch
+            self._phase_fallback_active = self._phase_notify_problem_active()
+
+            # start/cancel timer based on current state (startup/reload)
+            self._reconcile_phase_feedback_notify()
+
+        self._notify_mode_listeners()
+
+        # Apply immediately so thresholds/loops match current phase at startup
+        self._create_task(self._hysteresis_apply())
+        self._start_regulation_loop_if_needed()
+
     # ---------------- Core helper routines ----------------
     async def _start_charging_and_reclaim(self):
         await self._ensure_charging_enable_on()
@@ -1222,8 +2226,10 @@ class EVLoadController:
         if self._priority_mode_enabled:
             with contextlib.suppress(Exception):
                 await async_align_current_with_order(self.hass)
+        self._auto_clear_stop_reason()
 
     async def _pause_basic(self, set_current_to_min: bool):
+        self._auto_clear_stop_reason()
         self._charging_active = False
         await self._ensure_charging_enable_off()
         self._cancel_relock_task()
@@ -1277,13 +2283,12 @@ class EVLoadController:
             self._no_data_since = None
             self._cancel_no_data_timer()
             if prev_missing and self._priority_mode_enabled:
-                self.hass.async_create_task(async_clear_priority_pause(self.hass, self.entry.entry_id, "no_data", notify=False))
-                self.hass.async_create_task(async_align_current_with_order(self.hass))
+                self._create_task(async_clear_priority_pause(self.hass, self.entry.entry_id, "no_data", notify=False))
+                self._create_task(async_align_current_with_order(self.hass))
 
         self._last_missing_nonempty = now_missing
 
     # ---------------- Check if essential entities ready at startup ----------------
-
     def _is_entity_known(self, entity_id: Optional[str]) -> bool:
         if not entity_id:
             return False
@@ -1325,13 +2330,13 @@ class EVLoadController:
         new_val = iv if iv > 0 else None
         if new_val != self._ext_import_limit_w:
             self._ext_import_limit_w = new_val
-            self.hass.async_create_task(self._save_unified_state())
+            self._create_task(self._save_unified_state_debounced())
             _LOGGER.info("External import limit (Max peak avg) updated → %s W", new_val or 0)
             # Re-apply hysteresis with new thresholds
-            self.hass.async_create_task(self._hysteresis_apply())
+            self._create_task(self._hysteresis_apply())
             self._evaluate_missing_and_start_no_data_timer()
 
-    # Helper: profile min band
+    # ---------------- Helper: profile min band ----------------
     def _profile_min_band_w(self) -> int:
         try:
             band = SUPPLY_PROFILE_MIN_BAND.get(self._supply_profile_key)
@@ -1347,7 +2352,16 @@ class EVLoadController:
         if not ext or ext <= 0:
             return False
 
-        base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+        # Use the correct lower threshold based on current phase mode
+        if self._use_alt_thresholds():
+            eff = _effective_config(self.entry)
+            if self.get_mode(MODE_ECO):
+                base_lower = float(eff.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))
+            else:
+                base_lower = float(eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))
+        else:
+            base_lower = self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+
         ext_lower = float(-ext)
 
         # Only apply if ext is stricter (less negative / closer to zero) than base lower.
@@ -1364,6 +2378,13 @@ class EVLoadController:
                 device_name = getattr(self.entry, "title", None)
         return device_name or self.entry.entry_id
 
+    def _log_name(self) -> str:
+        """Short, user-friendly name for logs (prefer configured name/title over entry_id)."""
+        try:
+            return self._device_name_for_notify()
+        except Exception:
+            return self.entry.entry_id
+
     async def _persist_external_off_state(self) -> None:
         """Persist external-off state (latch + last event timestamps) in config entry options."""
         try:
@@ -1377,12 +2398,120 @@ class EVLoadController:
         except Exception:
             _LOGGER.debug("EVCM: failed to persist external OFF state", exc_info=True)
 
+    # ---------------- Task tracking helpers ----------------
+    def _track_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Track a task for cleanup on shutdown."""
+        if task is None:
+            return task
+        self._tracked_tasks.add(task)
+        task.add_done_callback(self._tracked_tasks.discard)
+        return task
+
+    def _create_task(self, coro) -> asyncio.Task:
+        """Create and track a task."""
+        task = self.hass.async_create_task(coro)
+        return self._track_task(task)
+
+    def _cancel_tracked_tasks(self) -> int:
+        """Cancel all tracked tasks. Returns count of cancelled tasks."""
+        cancelled = 0
+        for task in list(self._tracked_tasks):
+            if task and not task.done():
+                task.cancel()
+                cancelled += 1
+        self._tracked_tasks.clear()
+        return cancelled
+
+    # ---------------- Notification helpers ----------------
+    async def _notify_persistent(
+        self,
+        title: str,
+        message: str,
+        notification_id: str,
+    ) -> None:
+        """Create a persistent notification."""
+        with contextlib.suppress(Exception):
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": title,
+                    "message": message,
+                    "notification_id": notification_id,
+                },
+                blocking=False,
+            )
+
+    async def _dismiss_persistent(self, notification_id: str) -> None:
+        """Dismiss a persistent notification."""
+        with contextlib.suppress(Exception):
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": notification_id},
+                blocking=False,
+            )
+
+    def _notify_persistent_fire_and_forget(
+        self,
+        title: str,
+        message: str,
+        notification_id: str,
+    ) -> None:
+        """Create a persistent notification without awaiting (fire and forget)."""
+        self._create_task(
+            self._notify_persistent(title, message, notification_id)
+        )
+
+    # ---------------- Helper: phase switch reconcile ----------------
+    def _schedule_phase_post_veto_reconcile(self) -> None:
+        async def _runner():
+            try:
+                await asyncio.sleep(float(PHASE_SWITCH_CE_VETO_SECONDS_DEFAULT) + 0.2)
+                # If another phase switch happened, this timestamp will have moved
+                if time.monotonic() < float(self._ce_phase_veto_until_ts or 0.0):
+                    return
+
+                # Back to normal control: re-evaluate and restart loops
+                await self._hysteresis_apply()
+                self._start_regulation_loop_if_needed()
+                self._start_resume_monitor_if_needed()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                _LOGGER.debug("Phase post-veto reconcile failed", exc_info=True)
+
+        self._create_task(_runner())
+
+    # ---------------- Helper: phase switch effective phase mode ----------------
+    def _effective_phase_mode(self) -> str:
+        """Return '1p', '3p' or 'unknown' based on confirmed feedback."""
+        if not self._phase_switch_supported():
+            return "3p"
+        if self._phase_feedback_value in ("1p", "3p"):
+            return self._phase_feedback_value
+        return "unknown"
+
+    # ---------------- Helper: effective profile ----------------
+    def _effective_reg_profile_key(self) -> str:
+        """EU-only phase-switch aware profile key for regulation math (regMin + inc/dec thresholds).
+
+        - If phase switching isn't supported: use configured profile.
+        - If feedback confirms 1p: use EU 1p profile for regulation calculations.
+        - Otherwise: use configured profile (typically EU 3p profile).
+        """
+        if not self._phase_switch_supported():
+            return self._supply_profile_key
+        if self._phase_feedback_value == "1p":
+            return "eu_1ph_230"
+        return self._supply_profile_key
+
     # ---------------- Event callbacks ----------------
     @callback
     def _async_cable_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
-        self.hass.async_create_task(self._refresh_priority_mode_flag())
+        self._create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(self._cable_entity, getattr(new, "state", None), "cable_transition", side="new")
@@ -1404,26 +2533,27 @@ class EVLoadController:
                 # reflect the actual HA state in the cache immediately
                 self._ce_last_desired = True if new.state == STATE_ON else False
                 self._ce_last_write_ts = time.monotonic()
+
+                if new.state == STATE_ON:
+                    # If we see ON, any enable-retry loop is no longer needed.
+                    self._cancel_ce_enable_retry()
         except Exception:
             # don't let cache-sync break event processing
             _LOGGER.debug("Failed to sync CE cache from event", exc_info=True)
 
-        self.hass.async_create_task(self._refresh_priority_mode_flag())
+        self._create_task(self._refresh_priority_mode_flag())
 
         device_name = None
         with contextlib.suppress(Exception):
-            # Prefer configured name if you have it
             device_name = getattr(self, "name", None) or getattr(self, "_name", None)
-
         if not device_name:
             with contextlib.suppress(Exception):
-                # Fallback: use the config entry title
                 device_name = getattr(self.entry, "title", None)
-
         if not device_name:
             device_name = self.entry.entry_id
 
-        # ---- External OFF latch + external ON clears latch (two separate notifications) ----
+        # External OFF latch + external ON clears latch (two separate notifications)
+        # External OFF detection is ONLY meaningful if EVCM currently wants charging_enable ON.
         try:
             if self._is_known_state(new):
                 now = time.monotonic()
@@ -1433,11 +2563,8 @@ class EVLoadController:
                     self._ce_external_off_latched = False
                     self._ce_on_blocked_logged = False
                     self._ce_external_last_on_ts = dt_util.utcnow().timestamp()
-                    self.hass.async_create_task(self._persist_external_off_state())
-                    _LOGGER.warning(
-                        "EVCM: external OFF latch cleared by external ON. entry=%s entity=%s",
-                        self.entry.entry_id, self._charging_enable_entity
-                    )
+                    self._create_task(self._persist_external_off_state())
+                    _LOGGER.warning("EVCM %s: external OFF latch cleared by external ON (entity=%s)", self._log_name(), self._charging_enable_entity)
 
                     msg = (
                         f"External charging_enable ON detected for {device_name}\n"
@@ -1445,113 +2572,138 @@ class EVLoadController:
                         "External OFF latch cleared: yes\n"
                         "Charging can resume."
                     )
-
-                    self.hass.async_create_task(
-                        self.hass.services.async_call(
-                            "persistent_notification",
-                            "create",
-                            {
-                                "title": "EVCM: External ON detected",
-                                "message": msg,
-                                "notification_id": f"evcm_external_on_{self.entry.entry_id}",
-                            },
-                            blocking=False,
-                        )
+                    self._notify_persistent_fire_and_forget(
+                        "EVCM: External ON detected",
+                        msg,
+                        self._external_on_notification_id(),
                     )
 
-                # External OFF detection + latch
+                # External OFF detection + latch (only when EVCM wants ON now)
                 if str(new.state) == STATE_OFF:
-                    # "Expected OFF" if our last intent was OFF very recently.
-                    expected_off_recent = (
-                        self._ce_last_intent_desired is False
-                        and (now - float(self._ce_last_intent_ts or 0.0)) <= 5.0
-                    )
+                    wants_on_now = False
+                    try:
+                        wants_on_now = bool(self._ce_wants_enable_on_now())
+                    except Exception:
+                        wants_on_now = False
 
-                    if not expected_off_recent:
-                        cable_connected = False
-                        try:
-                            cable_connected = self._is_cable_connected()
-                        except Exception:
+                    if wants_on_now:
+                        # "Expected OFF" if our last intent was OFF very recently (race protection).
+                        expected_off_recent = (
+                            self._ce_last_intent_desired is False
+                            and (now - float(self._ce_last_intent_ts or 0.0)) <= 5.0
+                        )
+
+                        if not expected_off_recent:
                             cable_connected = False
+                            try:
+                                cable_connected = self._is_cable_connected()
+                            except Exception:
+                                cable_connected = False
 
-                        # Latch on ANY external OFF (we did not recently intend OFF)
-                        if cable_connected and not self._ce_external_off_latched:
-                            self._ce_external_off_latched = True
-                            self._ce_on_blocked_logged = False
-                            self._ce_external_last_off_ts = dt_util.utcnow().timestamp()
-                            self.hass.async_create_task(self._persist_external_off_state())
-                            last_intent = (
-                                "on" if self._ce_last_intent_desired is True
-                                else "off" if self._ce_last_intent_desired is False
-                                else "unknown"
-                            )
-                            age_s = now - float(self._ce_last_intent_ts or 0.0)
-                            _LOGGER.warning(
-                                "EVCM: external OFF latched until cable disconnect. entry=%s entity=%s last_intent=%s age=%.1fs",
-                                self.entry.entry_id, self._charging_enable_entity, last_intent, age_s
-                            )
+                            if cable_connected:
+                                # Latch on ANY external OFF (we did not recently intend OFF)
+                                if not self._ce_external_off_latched:
+                                    self._ce_external_off_latched = True
+                                    self._ce_on_blocked_logged = False
+                                    self._ce_external_last_off_ts = dt_util.utcnow().timestamp()
+                                    self._create_task(self._persist_external_off_state())
+                                    last_intent = (
+                                        "on" if self._ce_last_intent_desired is True
+                                        else "off" if self._ce_last_intent_desired is False
+                                        else "unknown"
+                                    )
+                                    age_s = now - float(self._ce_last_intent_ts or 0.0)
+                                    _LOGGER.warning(
+                                        "EVCM %s: external OFF latched until cable disconnect. entity=%s last_intent=%s age=%.1fs",
+                                        self._log_name(), 
+                                        self._charging_enable_entity, 
+                                        last_intent, age_s
+                                    )
 
-                        # Notify OFF (dedupe with cooldown)
-                        if cable_connected and (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
-                            self._ce_external_off_last_notify_ts = now
+                                # Notify OFF (dedupe with cooldown)
+                                if (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
+                                    self._ce_external_off_last_notify_ts = now
 
-                            last_intent = (
-                                "on" if self._ce_last_intent_desired is True
-                                else "off" if self._ce_last_intent_desired is False
-                                else "unknown"
-                            )
-                            age_s = now - float(self._ce_last_intent_ts or 0.0)
+                                    msg = (
+                                        f"External charging_enable OFF detected for {device_name}\n"
+                                        f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                        f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                                        "To reset, unplug the EV.\n"
+                                        "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                                        "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
+                                    )
 
-                            msg = (
-                                f"External charging_enable OFF detected for {device_name}\n"
-                                f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
-                                "To reset, unplug the EV.\n"
-                                "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
-                                "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
-                            )
+                                    _LOGGER.warning("EVCM %s: %s", self._log_name(), msg.replace("\n", " | "))
 
-                            _LOGGER.warning("EVCM: %s", msg.replace("\n", " | "))
+                                    self._notify_persistent_fire_and_forget(
+                                        "EVCM: External OFF detected",
+                                        msg,
+                                        self._external_off_notification_id(),
+                                    )
 
-                            self.hass.async_create_task(
-                                self.hass.services.async_call(
-                                    "persistent_notification",
-                                    "create",
-                                    {
-                                        "title": "EVCM: External OFF detected",
-                                        "message": msg,
-                                        "notification_id": f"evcm_external_off_{self.entry.entry_id}",
-                                    },
-                                    blocking=False,
-                                )
-                            )
         except Exception:
             _LOGGER.debug("EVCM: external OFF detection/latch failed", exc_info=True)
 
+        # Start/Stop OFF: always enforce OFF and exit early
         if not self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._ensure_charging_enable_off())
-            self.hass.async_create_task(self._enforce_start_stop_policy())
+            self._create_task(self._ce_write(False, reason="startstop_off", force=True))
+            self._create_task(self._enforce_start_stop_policy())
             return
 
+        # Unknown transitions: report and exit
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
-                self._report_unknown(self._charging_enable_entity, getattr(new, "state", None), "charging_enable_transition", side="new")
+                self._report_unknown(
+                    self._charging_enable_entity,
+                    getattr(new, "state", None),
+                    "charging_enable_transition",
+                    side="new",
+                )
             elif self._is_unknownish_state(old):
                 if self._should_report_unknown("charging_enable_transition", side="old"):
-                    self._report_unknown(self._charging_enable_entity, getattr(old, "state", None), "charging_enable_transition", side="old")
+                    self._report_unknown(
+                        self._charging_enable_entity,
+                        getattr(old, "state", None),
+                        "charging_enable_transition",
+                        side="old",
+                    )
             return
 
-        self.hass.async_create_task(self._hysteresis_apply())
+        # If charging_enable turns ON while EVCM does NOT allow charging now (planner/soc/priority/data),
+        # immediately enforce OFF (single-shot). This prevents late/stale ON feedback from keeping charging enabled.
+        try:
+            if str(new.state) == STATE_ON:
+                allowed = (
+                    self.get_mode(MODE_START_STOP)
+                    and self._is_cable_connected()
+                    and self._planner_window_allows_start()
+                    and self._soc_allows_start()
+                    and self._priority_allowed_cache
+                    and self._essential_data_available()
+                )
+                if not allowed:
+                    _LOGGER.warning(
+                        "EVCM %s: charging_enable became ON while charging is not allowed -> enforcing OFF",
+                        self._device_name_for_notify(),
+                    )
+                    self._cancel_ce_enable_retry()
+                    self._create_task(self._ce_write(False, reason="disallowed_on_event", force=True))
+        except Exception:
+            _LOGGER.debug("Failed to enforce OFF on disallowed ON state", exc_info=True)
+
+        # Normal path
+        self._create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
         if self._is_charging_enabled() and not self.get_mode(MODE_MANUAL_AUTO) and self._is_cable_connected():
             self._start_regulation_loop_if_needed()
+        self._create_task(self._auto_evaluate_and_maybe_switch())
 
     @callback
     def _async_net_power_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
         ent = event.data.get("entity_id")
-        self.hass.async_create_task(self._refresh_priority_mode_flag())
+        self._create_task(self._refresh_priority_mode_flag())
         if not (self._is_known_state(old) and self._is_known_state(new)):
             if self._is_unknownish_state(new):
                 self._report_unknown(ent, getattr(new, "state", None), "net_power_transition", side="new")
@@ -1560,18 +2712,19 @@ class EVLoadController:
                     self._report_unknown(ent, getattr(old, "state", None), "net_power_transition", side="old")
             return
         if self.get_mode(MODE_START_STOP) and not self.get_mode(MODE_MANUAL_AUTO):
-            self.hass.async_create_task(self._hysteresis_apply())
+            self._create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
+        self._create_task(self._auto_evaluate_and_maybe_switch())
 
     @callback
     def _async_wallbox_status_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
-        self.hass.async_create_task(self._refresh_priority_mode_flag())
+        self._create_task(self._refresh_priority_mode_flag())
 
         if not self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._ensure_charging_enable_off())
-            self.hass.async_create_task(self._enforce_start_stop_policy())
+            self._create_task(self._ensure_charging_enable_off())
+            self._create_task(self._enforce_start_stop_policy())
             return
 
         if not (self._is_known_state(old) and self._is_known_state(new)):
@@ -1584,18 +2737,18 @@ class EVLoadController:
 
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._hysteresis_apply())
+            self._create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
 
     @callback
     def _async_charge_power_event(self, event: Event):
         old = event.data.get("old_state")
         new = event.data.get("new_state")
-        self.hass.async_create_task(self._refresh_priority_mode_flag())
+        self._create_task(self._refresh_priority_mode_flag())
 
         if not self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._ensure_charging_enable_off())
-            self.hass.async_create_task(self._enforce_start_stop_policy())
+            self._create_task(self._ensure_charging_enable_off())
+            self._create_task(self._enforce_start_stop_policy())
             return
 
         if not (self._is_known_state(old) and self._is_known_state(new)):
@@ -1613,8 +2766,9 @@ class EVLoadController:
 
         self._start_regulation_loop_if_needed()
         if self.get_mode(MODE_START_STOP):
-            self.hass.async_create_task(self._hysteresis_apply())
+            self._create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
+        self._create_task(self._auto_evaluate_and_maybe_switch())
 
     @callback
     def _async_lock_event(self, event: Event):
@@ -1634,7 +2788,7 @@ class EVLoadController:
                                 return
                         await self._start_charging_and_reclaim()
                         self._start_regulation_loop_if_needed()
-                    self.hass.async_create_task(_try_start_after_unlock())
+                    self._create_task(_try_start_after_unlock())
 
     @callback
     def _async_ev_soc_event(self, event: Event):
@@ -1651,8 +2805,8 @@ class EVLoadController:
         prev = self._last_soc_allows
         self._last_soc_allows = allows
         if allows and prev is False and self._priority_mode_enabled:
-            self.hass.async_create_task(async_align_current_with_order(self.hass))
-        self.hass.async_create_task(self._hysteresis_apply())
+            self._create_task(async_align_current_with_order(self.hass))
+        self._create_task(self._hysteresis_apply())
         self._evaluate_missing_and_start_no_data_timer()
 
     # ---------------- Cable handling ----------------
@@ -1662,9 +2816,9 @@ class EVLoadController:
             return
         self._last_cable_connected = connected
         if connected:
-            self.hass.async_create_task(self._on_cable_connected())
+            self._create_task(self._on_cable_connected())
         else:
-            self.hass.async_create_task(self._on_cable_disconnected())
+            self._create_task(self._on_cable_disconnected())
 
     async def _apply_cable_state_initial(self):
         if not self._cable_entity:
@@ -1685,9 +2839,9 @@ class EVLoadController:
             self._charging_active = False
 
         if self._last_cable_connected:
-            self.hass.async_create_task(self._on_cable_connected())
+            self._create_task(self._on_cable_connected())
         else:
-            self.hass.async_create_task(self._on_cable_disconnected(initial=True))
+            self._create_task(self._on_cable_disconnected(initial=True))
 
     async def _on_cable_connected(self):
         self._reset_timers()
@@ -1699,8 +2853,8 @@ class EVLoadController:
             await self._refresh_priority_mode_flag()
             self._priority_allowed_cache = await self._is_priority_allowed()
             if not self._priority_mode_enabled:
-                for _ in range(4):
-                    await asyncio.sleep(0.25)
+                for _ in range(PRIORITY_REFRESH_RETRIES):
+                    await asyncio.sleep(PRIORITY_REFRESH_POLL_INTERVAL_S)
                     await self._refresh_priority_mode_flag()
                     self._priority_allowed_cache = await self._is_priority_allowed()
                     if self._priority_mode_enabled:
@@ -1729,7 +2883,7 @@ class EVLoadController:
                     )
                     if should_set_min:
                         try:
-                            self.hass.async_create_task(
+                            self._create_task(
                                 self.hass.services.async_call(
                                     "number",
                                     "set_value",
@@ -1812,7 +2966,7 @@ class EVLoadController:
                     if st is not None:
                         try:
                             pw = float(st.state)
-                            if pw > 100.0:
+                            if pw > CHARGING_POWER_THRESHOLD_W:
                                 return True
                         except Exception:
                             pass
@@ -1822,8 +2976,7 @@ class EVLoadController:
             return False
 
         try:
-            retries = 8  # ~2s total (8 * 0.25s)
-            for _ in range(retries):
+            for _ in range(OTHER_CHARGING_CHECK_RETRIES):
                 controllers_data = (self.hass.data.get(DOMAIN, {}) or {}).copy()
                 someone_charging_else = False
                 for pid, data in controllers_data.items():
@@ -1837,7 +2990,7 @@ class EVLoadController:
                         continue
                 if someone_charging_else:
                     break
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(OTHER_CHARGING_CHECK_INTERVAL_S)
         except Exception:
             someone_charging_else = False
 
@@ -1901,15 +3054,15 @@ class EVLoadController:
     async def _on_cable_disconnected(self, initial: bool = False):
         if self._ce_external_off_latched or self._ce_external_last_off_ts or self._ce_external_last_on_ts:
             _LOGGER.info(
-                "EVCM: external OFF/ON state cleared (cable disconnected) entry=%s",
-                self.entry.entry_id
+                "EVCM %s: external OFF/ON state cleared (cable disconnected)",
+                self._log_name()
             )
 
         self._ce_external_off_latched = False
         self._ce_on_blocked_logged = False
         self._ce_external_last_off_ts = None
         self._ce_external_last_on_ts = None
-        self.hass.async_create_task(self._persist_external_off_state())
+        self._create_task(self._persist_external_off_state())
 
         self._pending_initial_start = False
         self._cancel_auto_connect_task()
@@ -1947,7 +3100,7 @@ class EVLoadController:
     def _start_reclaim_monitor_if_needed(self):
         if self._reclaim_task and not self._reclaim_task.done():
             return
-        self._reclaim_task = self.hass.async_create_task(self._reclaim_monitor_loop())
+        self._reclaim_task = self._create_task(self._reclaim_monitor_loop())
 
     def _stop_reclaim_monitor(self):
         task = self._reclaim_task
@@ -1995,7 +3148,7 @@ class EVLoadController:
             _LOGGER.debug("Auto-connect suppressed: startup grace active")
             return
         self._cancel_auto_connect_task()
-        self._auto_connect_task = self.hass.async_create_task(self._auto_connect_task_run())
+        self._auto_connect_task = self._create_task(self._auto_connect_task_run())
 
     async def _auto_connect_task_run(self):
         try:
@@ -2064,7 +3217,7 @@ class EVLoadController:
             return
         if self._planner_monitor_task and not self._planner_monitor_task.done():
             return
-        self._planner_monitor_task = self.hass.async_create_task(self._planner_monitor_loop())
+        self._planner_monitor_task = self._create_task(self._planner_monitor_loop())
 
     def _stop_planner_monitor(self):
         task = self._planner_monitor_task
@@ -2092,21 +3245,42 @@ class EVLoadController:
                                 await async_align_current_with_order(self.hass)
                         await self._hysteresis_apply()
                 previous_allows = allows
-                await asyncio.sleep(PLANNER_MONITOR_INTERVAL)
+                await asyncio.sleep(PLANNER_MONITOR_INTERVAL_S)
         except asyncio.CancelledError:
             return
         except Exception as exc:
             _LOGGER.warning("Planner monitor error: %s", exc)
 
     # ---------------- Hysteresis logic ----------------
+    def _use_alt_thresholds(self) -> bool:
+        """ALT thresholds are for EU 1P. Use them only when phase feedback is explicitly '1p'."""
+        if not self._phase_switch_supported():
+            return False
+        return self._phase_feedback_value == "1p"
+
     def _current_lower(self) -> float:
         if self._max_peak_override_active():
-            return float(-self._ext_import_limit_w)  # ext is guaranteed set here
+            return float(-self._ext_import_limit_w)
+
+        if self._use_alt_thresholds():
+            eff = _effective_config(self.entry)
+            if self.get_mode(MODE_ECO):
+                return float(eff.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))
+            return float(eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))
+
         return self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
+
 
     def _current_upper(self) -> float:
         if self._max_peak_override_active():
             return float(self._current_lower() + self._profile_min_band_w())
+
+        if self._use_alt_thresholds():
+            eff = _effective_config(self.entry)
+            if self.get_mode(MODE_ECO):
+                return float(eff.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))
+            return float(eff.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))
+
         return self._eco_on_upper if self.get_mode(MODE_ECO) else self._eco_off_upper
 
     async def _hysteresis_apply(self, preserve_current: bool = False):
@@ -2140,7 +3314,7 @@ class EVLoadController:
                 await self._advance_if_current()
             return
 
-        # NEW: treat "enabled" or "detected charging" as active too
+        # Treat "enabled" or "detected charging" as active too
         is_effectively_active = (
             self._charging_active
             or self._is_charging_enabled()
@@ -2316,7 +3490,7 @@ class EVLoadController:
             finally:
                 self._below_lower_task = None
 
-        self._below_lower_task = self.hass.async_create_task(_runner())
+        self._below_lower_task = self._create_task(_runner())
 
     def _schedule_no_data_timer(self):
         self._cancel_no_data_timer()
@@ -2342,7 +3516,7 @@ class EVLoadController:
             finally:
                 self._no_data_task = None
 
-        self._no_data_task = self.hass.async_create_task(_runner())
+        self._no_data_task = self._create_task(_runner())
 
     def _conditions_for_timers(self) -> bool:
         if self._is_startup_grace_active():
@@ -2381,6 +3555,7 @@ class EVLoadController:
 
     async def _pause_due_below_lower(self, duration: int):
         _LOGGER.info("Pause: net < lower for ≥ %ds → retain priority (reclaim)", duration)
+        self._auto_set_stop_reason_below_lower()
         self._below_lower_since = None
         self._cancel_below_lower_timer()
         self._charging_active = False
@@ -2400,6 +3575,7 @@ class EVLoadController:
 
     async def _pause_due_no_data(self, duration: int):
         _LOGGER.info("Pause: missing data for ≥ %ds → handover", duration)
+        self._auto_clear_stop_reason()
         self._no_data_since = None
         self._cancel_no_data_timer()
         self._charging_active = False
@@ -2412,7 +3588,7 @@ class EVLoadController:
         try:
             if self._priority_mode_enabled:
                 await async_mark_priority_pause(self.hass, self.entry.entry_id, "no_data", notify=False)
-                self.hass.async_create_task(async_handover_after_pause(self.hass, self.entry.entry_id))
+                self._create_task(async_handover_after_pause(self.hass, self.entry.entry_id))
         except Exception:
             _LOGGER.error("No-data handover failed", exc_info=True)
 
@@ -2438,7 +3614,7 @@ class EVLoadController:
             return
         if not self._should_regulate():
             return
-        self._regulation_task = self.hass.async_create_task(self._regulation_loop())
+        self._regulation_task = self._create_task(self._regulation_loop())
 
     def _stop_regulation_loop(self):
         task = self._regulation_task
@@ -2485,14 +3661,20 @@ class EVLoadController:
                 missing = self._current_missing_components()
                 soc = self._get_ev_soc_percent()
                 conf_max_a = self._max_current_a()
-                reg_min = self._effective_regulation_min_power()
+                # Phase-aware regulation minimum:
+                # use 1p minimum when feedback confirms 1p, otherwise use configured supply profile
+                if self._phase_switch_supported() and self._phase_feedback_value == "1p":
+                    reg_min = int(SUPPLY_PROFILES["eu_1ph_230"].get("regulation_min_w", 1300))
+                else:
+                    reg_profile_key = self._effective_reg_profile_key()
+                    reg_min = int((SUPPLY_PROFILES.get(reg_profile_key) or {}).get("regulation_min_w", self._effective_regulation_min_power()))
 
                 _LOGGER.debug(
-                    "RegTick: net=%s target=%s currentA=%s status=%s enable=%s charge_power=%s soc=%s limit=%s active=%s missing=%s maxA=%s regMin=%s profile=%s",
+                    "RegTick: net=%s target=%s currentA=%s status=%s enable=%s charge_power=%s soc=%s limit=%s active=%s missing=%s maxA=%s regMin=%s primary_profile=%s phase_mode=%s",
                     net, self._net_power_target_w, current_a_dbg, status,
                     self._is_charging_enabled(), charge_power, soc, self._soc_limit_percent,
                     self._charging_active, ",".join(missing) if missing else "-", conf_max_a,
-                    reg_min, self._supply_profile_key
+                    reg_min, self._supply_profile_key, self._phase_feedback_value
                 )
 
                 if net is not None:
@@ -2511,9 +3693,10 @@ class EVLoadController:
                             self._below_lower_since = None
                             self._cancel_below_lower_timer()
 
-                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(self._supply_profile_key) or {}
-                inc_export = thr.get("export_inc_w", 700 if self._wallbox_three_phase else 250)
-                dec_import = thr.get("import_dec_w", 200 if self._wallbox_three_phase else 0)
+                # Phase-switch aware regulation step thresholds:
+                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(self._effective_reg_profile_key()) or {}
+                inc_export = float(thr.get("export_inc_w", 250))
+                dec_import = float(thr.get("import_dec_w", 0))
 
                 if (
                     net is not None
@@ -2540,6 +3723,9 @@ class EVLoadController:
                                     deviation, export_w, import_w, inc_export, dec_import, current_a, new_a
                                 )
                                 await self._set_current_setting_a(new_a)
+                                
+                # Keep auto phase switching evaluation alive while regulating
+                self._create_task(self._auto_evaluate_and_maybe_switch())
 
                 await asyncio.sleep(self._scan_interval)
         except asyncio.CancelledError:
@@ -2553,7 +3739,7 @@ class EVLoadController:
             return
         if not self._should_resume_monitor():
             return
-        self._resume_task = self.hass.async_create_task(self._resume_monitor_loop())
+        self._resume_task = self._create_task(self._resume_monitor_loop())
 
     def _stop_resume_monitor(self):
         task = self._resume_task
@@ -2599,7 +3785,294 @@ class EVLoadController:
         except Exception as exc:
             _LOGGER.warning("Resume loop error: %s", exc)
 
-    async def _ce_write(self, desired_on: bool, *, reason: str = "") -> None:
+    # ---------------- Charging_enable retry ON ----------------
+    def _cancel_ce_enable_retry(self) -> None:
+        """Stop any pending enable retry loop."""
+        was_active = bool(self._ce_enable_retry_active) or (self._ce_enable_retry_task is not None)
+        self._ce_enable_retry_active = False
+        self._ce_enable_retry_count = 0
+        t = self._ce_enable_retry_task
+        self._ce_enable_retry_task = None
+        if t and not t.done():
+            t.cancel()
+        if was_active:
+            _LOGGER.debug("EVCM %s: CE ON retry stopped: retry no longer desired", self._log_name())
+
+    def _start_ce_enable_retry_if_needed(self) -> None:
+        """Start retry loop if enabling was requested but state doesn't follow."""
+        t = self._ce_enable_retry_task
+        if t and not t.done():
+            # If it's still around but retry is not active, cancel and replace it.
+            if not self._ce_enable_retry_active:
+                t.cancel()
+            else:
+                return
+        self._ce_enable_retry_active = True
+        self._ce_enable_retry_count = 0
+        self._ce_enable_retry_task = self._create_task(self._ce_enable_retry_loop())
+
+    async def _notify_ce_enable_no_effect(self) -> None:
+        """Notify user that enabling charging had no effect."""
+        try:
+            device_name = self._device_name_for_notify()
+            msg = (
+                f"Charging enable seems to have no effect for {device_name}.\n\n"
+                f"EVCM tried to turn charging_enable ON every {int(CE_ENABLE_RETRY_INTERVAL_S)}s "
+                f"for {int(CE_ENABLE_MAX_RETRIES)} attempts, but the entity state did not become ON.\n\n"
+                "Possible causes:\n"
+                "- Wallbox offline/rebooting while HA entities remain sticky\n"
+                "- Integration not updating charging_enable state\n"
+                "- Command not reaching the wallbox\n\n"
+                "EVCM will stop retrying for safety. You can trigger a new attempt by toggling cable "
+                "or by re-enabling Start/Stop (or when conditions change)."
+            )
+            await self._notify_persistent(
+                "EVCM: charging_enable has no effect",
+                msg,
+                f"evcm_ce_no_effect_{self.entry.entry_id}",
+            )
+        except Exception:
+            _LOGGER.debug("Failed to create CE no-effect notification", exc_info=True)
+
+    async def _ce_enable_retry_loop(self) -> None:
+        """Retry enabling charging_enable if desired ON but state stays OFF."""
+        try:
+            while self._ce_enable_retry_active:
+                await asyncio.sleep(float(CE_ENABLE_RETRY_INTERVAL_S))
+
+                # Stop conditions
+                if not self._ce_wants_enable_on_now():
+                    self._cancel_ce_enable_retry()
+                    return
+
+                # Stop retry during below-lower only in AUTO mode (thresholds do not apply in manual).
+                if not self.get_mode(MODE_MANUAL_AUTO):
+                    try:
+                        net = self._get_net_power_w()
+                        lower = float(self._current_lower())
+                    except Exception:
+                        net = None
+                        lower = None
+
+                    if (
+                        (net is not None and lower is not None and net < lower)
+                        or (self._below_lower_since is not None)
+                        or (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
+                    ):
+                        _LOGGER.debug(
+                            "CE ON retry stopped: below-lower active (auto mode) (net=%s lower=%s since=%s stop_reason=%s)",
+                            net, lower, self._below_lower_since, self._auto_last_stop_reason
+                        )
+                        self._cancel_ce_enable_retry()
+                        return
+
+                # Auto mode: retry-enable only when the upper threshold is *sustained* (debounce passed).
+                if not self.get_mode(MODE_MANUAL_AUTO):
+                    net = self._get_net_power_w()
+                    if net is None or not self._sustained_above_upper(net):
+                        _LOGGER.debug(
+                            "CE ON retry stopped: upper debounce not satisfied (auto mode) (net=%s upper=%s)",
+                            net, self._current_upper() if net is not None else None
+                        )
+                        self._cancel_ce_enable_retry()
+                        return
+
+                # Soft veto: phase switching safety window (delay, don't cancel)
+                if time.monotonic() < float(self._ce_phase_veto_until_ts or 0.0):
+                    _LOGGER.debug("CE ON retry delayed: phase switching veto active")
+                    continue
+
+                # Success check
+                st = self.hass.states.get(self._charging_enable_entity) if self._charging_enable_entity else None
+                if st and self._is_known_state(st) and st.state == STATE_ON:
+                    _LOGGER.debug("CE ON retry done: state is ON")
+                    self._cancel_ce_enable_retry()
+                    return
+
+                # Retry budget
+                self._ce_enable_retry_count += 1
+                if self._ce_enable_retry_count > int(CE_ENABLE_MAX_RETRIES):
+                    _LOGGER.warning(
+                        "EVCM %s: CE ON retries exhausted (%s attempts) entity=%s",
+                        self._log_name(),
+                        CE_ENABLE_MAX_RETRIES,
+                        self._charging_enable_entity,
+                    )
+                    await self._notify_ce_enable_no_effect()
+                    self._cancel_ce_enable_retry()
+                    return
+
+                _LOGGER.warning(
+                    "EVCM %s: CE ON retry attempt %s/%s: charging_enable still OFF -> re-sending ON (entity=%s)",
+                    self._log_name(),
+                    self._ce_enable_retry_count,
+                    CE_ENABLE_MAX_RETRIES,
+                    self._charging_enable_entity,
+                )
+
+                # Force a re-send even if internal dedup thinks it was already requested.
+                await self._ce_write(True, reason="retry_enable_no_effect", force=True)
+
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _LOGGER.debug("CE ON retry loop failed", exc_info=True)
+        finally:
+            self._ce_enable_retry_task = None
+
+    def _ce_wants_enable_on_now(self) -> bool:
+        return (
+            self.get_mode(MODE_START_STOP)
+            and self._is_cable_connected()
+            and self._planner_window_allows_start()
+            and self._soc_allows_start()
+            and self._priority_allowed_cache
+            and self._essential_data_available()
+            and (not self._ce_external_off_latched)
+        )
+
+    # ---------------- charging_enable retry OFF (Start/Stop OFF only) ----------------
+    def _cancel_ce_disable_retry(self) -> None:
+        """Stop any pending disable retry loop."""
+        self._ce_disable_retry_active = False
+        self._ce_disable_retry_count = 0
+        t = self._ce_disable_retry_task
+        self._ce_disable_retry_task = None
+        if t and not t.done():
+            t.cancel()
+
+    def _ce_wants_disable_off_now(self) -> bool:
+        """
+        True if charging_enable should be OFF right now.
+        - Always when Start/Stop is OFF (with cable connected).
+        - Also when Start/Stop is ON but charging is not allowed (planner window, SoC limit,
+        priority disallowed, missing data).
+        - In auto mode: only after below-lower pause has actually triggered (not during sustain timer).
+        """
+        if not self._charging_enable_entity or not self._is_cable_connected():
+            return False
+
+        # Start/Stop OFF: always enforce OFF
+        if not self.get_mode(MODE_START_STOP):
+            return True
+
+        # Planner / SoC / priority / missing data block charging
+        if not self._planner_window_allows_start():
+            return True
+        if not self._soc_allows_start():
+            return True
+        if not self._priority_allowed_cache:
+            return True
+        if not self._essential_data_available():
+            return True
+
+        # Auto mode: below-lower pause (only after sustain timer has actually paused charging)
+        if not self.get_mode(MODE_MANUAL_AUTO):
+            # Only consider below-lower as "OFF desired" if:
+            # 1. We actually stopped due to below-lower (stop reason is set), AND
+            # 2. Charging is no longer active (pause has been executed), AND
+            # 3. Net power hasn't recovered above upper yet
+            if self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER and not self._charging_active:
+                net = self._get_net_power_w()
+                try:
+                    upper = self._current_upper()
+                except Exception:
+                    upper = None
+
+                if net is not None and upper is not None and net < upper:
+                    return True
+
+        return False
+
+    def _start_ce_disable_retry_if_needed(self) -> None:
+        """Start retry loop when charging_enable should be OFF but isn't."""
+        if not self._ce_wants_disable_off_now():
+            return
+
+        t = self._ce_disable_retry_task
+        if t and not t.done():
+            if not self._ce_disable_retry_active:
+                t.cancel()
+            else:
+                return
+
+        self._ce_disable_retry_active = True
+        self._ce_disable_retry_count = 0
+        self._ce_disable_retry_task = self._create_task(self._ce_disable_retry_loop())
+
+    async def _notify_ce_disable_no_effect(self) -> None:
+        """Notify user that disabling charging had no effect."""
+        try:
+            device_name = self._device_name_for_notify()
+            msg = (
+                f"Charging disable seems to have no effect for {device_name}.\n\n"
+                f"EVCM tried to turn charging_enable OFF every {int(CE_DISABLE_RETRY_INTERVAL_S)}s "
+                f"for {int(CE_DISABLE_MAX_RETRIES)} attempts, but the entity state did not become OFF.\n\n"
+                "Possible causes:\n"
+                "- Wallbox/integration not updating charging_enable state\n"
+                "- Command not reaching the wallbox\n"
+                "- Wallbox refusing the OFF command\n\n"
+                "EVCM will stop retrying. Start/Stop is still OFF, so EVCM will not attempt to charge."
+            )
+            await self._notify_persistent(
+                "EVCM: charging_enable OFF has no effect",
+                msg,
+                f"evcm_ce_off_no_effect_{self.entry.entry_id}",
+            )
+        except Exception:
+            _LOGGER.debug("Failed to create CE OFF no-effect notification", exc_info=True)
+
+    async def _ce_disable_retry_loop(self) -> None:
+        """Retry disabling charging_enable if desired OFF but state stays ON."""
+        try:
+            while self._ce_disable_retry_active:
+                await asyncio.sleep(float(CE_DISABLE_RETRY_INTERVAL_S))
+
+                # Stop conditions: only enforce OFF while Start/Stop is OFF and cable is connected
+                if not self._ce_wants_disable_off_now():
+                    _LOGGER.debug("CE OFF retry stopped: retry no longer desired")
+                    self._cancel_ce_disable_retry()
+                    return
+
+                # Success check
+                st = self.hass.states.get(self._charging_enable_entity) if self._charging_enable_entity else None
+                if st and self._is_known_state(st) and st.state == STATE_OFF:
+                    _LOGGER.debug("CE OFF retry done: state is OFF")
+                    self._cancel_ce_disable_retry()
+                    return
+
+                # Retry budget
+                self._ce_disable_retry_count += 1
+                if self._ce_disable_retry_count > int(CE_DISABLE_MAX_RETRIES):
+                    _LOGGER.warning(
+                        "EVCM %s: CE OFF retries exhausted (%s attempts) entity=%s",
+                        self._log_name(),
+                        CE_DISABLE_MAX_RETRIES, 
+                        self._charging_enable_entity
+                    )
+                    await self._notify_ce_disable_no_effect()
+                    self._cancel_ce_disable_retry()
+                    return
+
+                _LOGGER.warning(
+                    "EVCM %s: CE OFF retry attempt %s/%s: charging_enable still not OFF -> re-sending OFF. (entity=%s)",
+                    self._log_name(),
+                    self._ce_disable_retry_count, 
+                    CE_DISABLE_MAX_RETRIES,
+                    self._charging_enable_entity
+                )
+
+                # Force a re-send even if internal dedup thinks it was already requested.
+                await self._ce_write(False, reason="retry_disable_no_effect", force=True)
+
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            _LOGGER.debug("CE OFF retry loop failed", exc_info=True)
+        finally:
+            self._ce_disable_retry_task = None
+
+    async def _ce_write(self, desired_on: bool, *, reason: str = "", force: bool = False) -> None:
         """
         Single-writer for charging_enable:
         - serializes turn_on/turn_off to avoid concurrent flapping
@@ -2608,6 +4081,10 @@ class EVLoadController:
         """
         if not self._charging_enable_entity:
             return
+
+        # If we are explicitly turning OFF, stop any pending enable retry.
+        if not desired_on:
+            self._cancel_ce_enable_retry()
 
         async with self._ce_lock:
             # PoC: remember our last intent (even if later dedup/veto prevents a call)
@@ -2624,26 +4101,51 @@ class EVLoadController:
                 _LOGGER.debug("CE veto ON (external OFF latch active) reason=%s", reason)
                 return
 
+            # Extra veto: if wallbox phase switching active, do not try to re-enable charging
+            if desired_on and time.monotonic() < float(self._ce_phase_veto_until_ts or 0.0):
+                _LOGGER.debug("CE veto ON (phase switching safety window) reason=%s", reason)
+                return
+
             dom, _ = self._charging_enable_entity.split(".", 1)
             if dom != "switch":
                 return
 
             now = time.monotonic()
 
-            if desired_on and (now - self._ce_last_write_ts) < CE_MIN_TOGGLE_INTERVAL_S:
+            # Min toggle interval dampener (apply for ON and OFF)
+            if (now - self._ce_last_write_ts) < CE_MIN_TOGGLE_INTERVAL_S:
                 try:
                     st = self.hass.states.get(self._charging_enable_entity)
-                    if not (st and self._is_known_state(st) and st.state == STATE_ON):
-                        _LOGGER.debug("CE suppress ON (min interval) reason=%s", reason)
-                        return
-                except Exception:
-                    # If we cannot read state for any reason, be conservative and allow write
-                    _LOGGER.debug("CE dampener: failed to read state, allowing write", exc_info=True)
+                    if self._is_known_state(st):
+                        if desired_on and st.state == STATE_ON:
+                            _LOGGER.debug("CE suppress ON (min interval) reason=%s", reason)
+                            return
+                        if (not desired_on) and st.state == STATE_OFF:
+                            _LOGGER.debug("CE suppress OFF (min interval) reason=%s", reason)
+                            return
 
-            # Internal dedup (prevents spam even if HA state hasn't caught up yet)
-            if self._ce_last_desired is not None and self._ce_last_desired == desired_on:
-                # Already heading to desired state — suppress duplicate
-                return
+                    # If state is unknown or mismatched, be conservative:
+                    # still suppress repeated writes within the interval to avoid spam.
+                    _LOGGER.debug(
+                        "CE suppress %s (min interval; state unknown/mismatch) reason=%s",
+                        "ON" if desired_on else "OFF",
+                        reason,
+                    )
+                    return
+                except Exception:
+                    # If we cannot read state for any reason, be conservative and suppress
+                    _LOGGER.debug("CE dampener: failed to read state, suppressing write", exc_info=True)
+                    return
+
+            # Internal dedup (prevents spam). Allow forced writes (retry loop).
+            if (not force) and (self._ce_last_desired is not None) and (self._ce_last_desired == desired_on):
+                st_cur = self.hass.states.get(self._charging_enable_entity)
+                if self._is_known_state(st_cur):
+                    if desired_on and st_cur.state == STATE_ON:
+                        return
+                    if (not desired_on) and st_cur.state == STATE_OFF:
+                        return
+                # state mismatched/unknown -> allow a new write
 
             # State-based dedup (prevents unnecessary service calls)
             st = self.hass.states.get(self._charging_enable_entity)
@@ -2660,15 +4162,45 @@ class EVLoadController:
                 self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "charging_enable_ce_write_get")
 
             svc = "turn_on" if desired_on else "turn_off"
+            _LOGGER.debug(
+                "CE write: sending %s to %s (reason=%s force=%s)",
+                "ON" if desired_on else "OFF",
+                self._charging_enable_entity,
+                reason or "-",
+                bool(force),
+            )
+
+            call_succeeded = False
             try:
                 await self.hass.services.async_call("switch", svc, {"entity_id": self._charging_enable_entity}, blocking=True)
-                # mark intended result after successful call
+                call_succeeded = True
+
+                # Mark intended result after successful call
                 self._ce_last_desired = desired_on
-            finally:
-                # always update last write timestamp so dampener works
                 self._ce_last_write_ts = time.monotonic()
 
-            if not desired_on:
+                if desired_on:
+                    st_after = self.hass.states.get(self._charging_enable_entity)
+
+                    if (
+                        self._ce_wants_enable_on_now()
+                        and not (st_after and self._is_known_state(st_after) and st_after.state == STATE_ON)
+                    ):
+                        self._start_ce_enable_retry_if_needed()
+                    else:
+                        # Either state already ON, or enable is no longer desired -> don't keep retrying.
+                        self._cancel_ce_enable_retry()
+
+            except Exception:
+                _LOGGER.warning(
+                    "CE write failed: %s to %s (reason=%s)",
+                    "ON" if desired_on else "OFF",
+                    self._charging_enable_entity,
+                    reason or "-",
+                    exc_info=True,
+                )
+
+            if call_succeeded and not desired_on:
                 self._cancel_relock_task()
 
     # ---------------- Sensor getters / setters ----------------
@@ -2759,11 +4291,13 @@ class EVLoadController:
         with contextlib.suppress(Exception):
             st = self.hass.states.get(self._charging_enable_entity)
             if self._is_known_state(st) and st.state == STATE_OFF:
+                self._cancel_ce_disable_retry()
                 return
             if not self._is_known_state(st):
                 self._report_unknown(self._charging_enable_entity, getattr(st, "state", None), "enable_ensure_off")
             await self._ce_write(False, reason="ensure_off")
         self._cancel_relock_task()
+        self._start_ce_disable_retry_if_needed()
 
     async def _ensure_charging_enable_on(self):
         if not self._charging_enable_entity or not self.get_mode(MODE_START_STOP):
@@ -2773,13 +4307,15 @@ class EVLoadController:
             if not self._ce_on_blocked_logged:
                 self._ce_on_blocked_logged = True
                 _LOGGER.warning(
-                    "EVCM: charging_enable ON blocked (external OFF latch active) entry=%s entity=%s",
-                    self.entry.entry_id, self._charging_enable_entity
+                    "EVCM %s: charging_enable ON blocked (external OFF latch active) entity=%s",
+                    self._log_name(), 
+                    self._charging_enable_entity
                 )
             else:
                 _LOGGER.debug(
-                    "EVCM: charging_enable ON blocked (external OFF latch active) reason=dedup entry=%s entity=%s",
-                    self.entry.entry_id, self._charging_enable_entity
+                    "EVCM %s: charging_enable ON blocked (external OFF latch active) reason=dedup entity=%s",
+                    self._log_name(), 
+                    self._charging_enable_entity
                 )
             return
 
@@ -2800,7 +4336,7 @@ class EVLoadController:
                         return
                     if (self._essential_data_available() and self._planner_window_allows_start()
                             and self._soc_allows_start() and self._priority_allowed_cache):
-                        ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
+                        ok = await self._ensure_unlocked_for_start()
                         if not ok:
                             _LOGGER.info("Initial start: unlock failed, aborting enable ON")
                             return
@@ -2818,7 +4354,7 @@ class EVLoadController:
                     if not self._auto_unlock_enabled:
                         _LOGGER.debug("Resume: Auto unlock is OFF -> no unlock fallback")
                         return
-                    ok = await self._ensure_unlocked_for_start(timeout_s=5.0)
+                    ok = await self._ensure_unlocked_for_start()
                     if not ok:
                         _LOGGER.info("Resume fallback unlock failed; start aborted")
                         return
@@ -2828,16 +4364,19 @@ class EVLoadController:
             if not (self._is_known_state(st) and st.state == STATE_ON):
                 await self._ce_write(True, reason="ensure_on_final")
             self._pending_initial_start = False
+            self._auto_clear_stop_reason()
 
             if did_unlock:
-                self._schedule_relock_after_charging_start()
+                # before: self._schedule_relock_after_charging_start()
+                # now: relock disabled
+                self._cancel_relock_task()
 
     async def _enforce_start_stop_policy(self):
         """Apply start/stop policy. Skip during startup grace to avoid blocking HA startup."""
         if self._is_startup_grace_active():
             def _reschedule():
                 try:
-                    self.hass.async_create_task(self._enforce_start_stop_policy())
+                    self._create_task(self._enforce_start_stop_policy())
                 except Exception:
                     _LOGGER.debug("Failed to reschedule _enforce_start_stop_policy", exc_info=True)
             try:
@@ -2886,27 +4425,52 @@ class EVLoadController:
         try:
             if mode == MODE_START_STOP:
                 if previous != enabled:
-                    self.hass.async_create_task(self._save_unified_state())
+                    self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("Start/Stop toggle -> %s", enabled)
                     if self._current_setting_entity:
-                        self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
+                        self._create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if not enabled and previous:
+                    # User turned Start/Stop OFF -> enforce charging_enable OFF.
                     self._ce_last_desired = None
-                    self.hass.async_create_task(self._ensure_charging_enable_off())
-                    self.hass.async_create_task(self._enforce_start_stop_policy())
+
+                    # Clear external OFF latch + dismiss related notifications
+                    try:
+                        if self._ce_external_off_latched or self._ce_external_last_off_ts or self._ce_external_last_on_ts:
+                            _LOGGER.debug("Clearing external OFF/ON state due to Start/Stop OFF (user action)")
+                        self._ce_external_off_latched = False
+                        self._ce_on_blocked_logged = False
+                        self._ce_external_last_off_ts = None
+                        self._ce_external_last_on_ts = None
+                        self._create_task(self._persist_external_off_state())
+                    except Exception:
+                        _LOGGER.debug("Failed to clear external OFF state on Start/Stop OFF", exc_info=True)
+
+                    # Dismiss old notifications (best effort)
+                    self._create_task(self._dismiss_external_off_notification())
+                    self._create_task(self._dismiss_external_on_notification())
+
+                    # Enforce OFF (retry is now handled inside _ensure_charging_enable_off)
+                    self._create_task(self._ensure_charging_enable_off())
+                    self._create_task(self._enforce_start_stop_policy())
+
                     async def _verify_enable_off_later():
                         try:
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(CE_VERIFY_DELAY_S)
                             st = self.hass.states.get(self._charging_enable_entity)
                             if (not self.get_mode(MODE_START_STOP)) and (not self._is_known_state(st) or st.state != STATE_OFF):
                                 await self._ensure_charging_enable_off()
                         except Exception:
                             pass
-                    self.hass.async_create_task(_verify_enable_off_later())
+                    self._create_task(_verify_enable_off_later())
 
-                    self.hass.async_create_task(self._advance_if_current())
+                    self._create_task(self._advance_if_current())
                     return
+                    
                 if enabled and previous is False:
+                    # Clean up stale external notifications (best effort)
+                    self._create_task(self._dismiss_external_off_notification())
+                    self._create_task(self._dismiss_external_on_notification())
+                    self._cancel_ce_disable_retry()
                     async def _after_enable_startstop_on():
                         if self._priority_mode_enabled:
                             await async_align_current_with_order(self.hass)
@@ -2938,23 +4502,23 @@ class EVLoadController:
                         self._start_regulation_loop_if_needed()
                         self._start_resume_monitor_if_needed()
 
-                    self.hass.async_create_task(_after_enable_startstop_on())
+                    self._create_task(_after_enable_startstop_on())
                     return
 
             if mode == MODE_ECO:
                 if previous != enabled and not self.get_mode(MODE_MANUAL_AUTO):
-                    self.hass.async_create_task(self._hysteresis_apply(preserve_current=True))
+                    self._create_task(self._hysteresis_apply(preserve_current=True))
                 if previous != enabled:
-                    self.hass.async_create_task(self._save_unified_state())
+                    self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("ECO toggle -> %s", enabled)
                 return
 
             if mode == MODE_MANUAL_AUTO:
                 if previous != enabled:
-                    self.hass.async_create_task(self._save_unified_state())
+                    self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("Manual toggle -> %s", enabled)
                     if self._current_setting_entity:
-                        self.hass.async_create_task(self._set_current_setting_a(MIN_CURRENT_A))
+                        self._create_task(self._set_current_setting_a(MIN_CURRENT_A))
                 if enabled:
                     self._reset_timers()
                     self._stop_reclaim_monitor()
@@ -2973,33 +4537,33 @@ class EVLoadController:
                             await self._ensure_charging_enable_off()
                         self._stop_regulation_loop()
                         self._stop_resume_monitor()
-                    self.hass.async_create_task(_enter_manual())
+                    self._create_task(_enter_manual())
                 else:
                     async def _after_manual_off():
                         await self._hysteresis_apply()
                         self._start_regulation_loop_if_needed()
                         self._start_resume_monitor_if_needed()
-                    self.hass.async_create_task(_after_manual_off())
+                    self._create_task(_after_manual_off())
                 return
 
             if mode == MODE_CHARGE_PLANNER:
                 if previous != enabled:
-                    self.hass.async_create_task(self._save_unified_state())
+                    self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("Planner toggle -> %s", enabled)
                 if enabled:
                     self._start_planner_monitor_if_needed()
                 else:
                     self._stop_planner_monitor()
                     if self._priority_mode_enabled:
-                        self.hass.async_create_task(async_align_current_with_order(self.hass))
+                        self._create_task(async_align_current_with_order(self.hass))
                 if self._roll_planner_dates_to_today_if_past():
                     self._persist_planner_dates_notify_threadsafe()
-                self.hass.async_create_task(self._hysteresis_apply())
+                self._create_task(self._hysteresis_apply())
                 return
 
             if mode == MODE_STARTSTOP_RESET:
                 if previous != enabled:
-                    self.hass.async_create_task(self._save_unified_state())
+                    self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("Start/Stop Reset toggle -> %s", enabled)
                 return
         finally:
