@@ -6,7 +6,6 @@ import logging
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.helpers.selector import selector
 from homeassistant.helpers import entity_registry as er
 
@@ -44,6 +43,7 @@ from .const import (
     MIN_BAND_230,
     MIN_BAND_400,
     # Timers and intervals
+    CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
     CONF_SUSTAIN_SECONDS,
@@ -57,6 +57,22 @@ from .const import (
     CONF_MAX_CURRENT_LIMIT_A,
     ABS_MIN_CURRENT_A,
     ABS_MAX_CURRENT_A,
+    # Phase switching (EUprofile-only)
+    CONF_PHASE_SWITCH_SUPPORTED,
+    CONF_PHASE_MODE_FEEDBACK_SENSOR,
+    CONF_ECO_ON_UPPER_ALT,
+    CONF_ECO_ON_LOWER_ALT,
+    CONF_ECO_OFF_UPPER_ALT,
+    CONF_ECO_OFF_LOWER_ALT,
+    DEFAULT_ECO_ON_UPPER_ALT,
+    DEFAULT_ECO_ON_LOWER_ALT,
+    DEFAULT_ECO_OFF_UPPER_ALT,
+    DEFAULT_ECO_OFF_LOWER_ALT,
+    # Auto phase switching (v1)
+    CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
+    AUTO_PHASE_SWITCH_DELAY_MIN_MIN,
+    AUTO_PHASE_SWITCH_DELAY_MIN_MAX,
+    DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,7 +143,6 @@ def _validate_thresholds(data: dict, band_min: float) -> dict[str, str]:
     return errors
 
 
-# Keys we will filter/prefill by the selected device (wallbox-related)
 KEY_DOMAIN_MAP: Dict[str, str] = {
     CONF_CHARGE_POWER: "sensor",
     CONF_WALLBOX_STATUS: "sensor",
@@ -145,8 +160,8 @@ def _build_sensors_schema(
     defaults: dict,
     selected_device: Optional[str] = None,
     filter_keys: Optional[set[str]] = None,
+    supply_profile: str = "eu_1ph_230",
 ) -> vol.Schema:
-    # Defensive: callers may pass None for defaults; ensure we have a dict here.
     if not isinstance(defaults, dict):
         defaults = {}
 
@@ -187,9 +202,19 @@ def _build_sensors_schema(
         }
     }
 
+    # ---- Auto phase switching (v1) selector ----
+    num_sel_auto_delay_min = {
+        "number": {
+            "min": AUTO_PHASE_SWITCH_DELAY_MIN_MIN,
+            "max": AUTO_PHASE_SWITCH_DELAY_MIN_MAX,
+            "step": 1,
+            "mode": "box",
+            "unit_of_measurement": "min",
+        }
+    }
+
     fields: dict = {}
 
-    # Grid sensors
     if grid_single:
         fields[vol.Required(CONF_GRID_POWER, default=defaults.get(CONF_GRID_POWER, ""))] = selector(
             {"entity": {"domain": "sensor"}}
@@ -214,7 +239,6 @@ def _build_sensors_schema(
             ent_selector["entity"]["domain"] = domain
         fields[vol.Required(key, default=defaults.get(key, ""))] = selector(ent_selector)
 
-    # Wallbox-related entities
     add_ent(CONF_CHARGE_POWER, "sensor", filterable=True)
     add_ent(CONF_WALLBOX_STATUS, "sensor", filterable=True)
     add_ent(CONF_CABLE_CONNECTED, "binary_sensor", filterable=True)
@@ -222,7 +246,6 @@ def _build_sensors_schema(
     add_ent(CONF_LOCK_SENSOR, "lock", filterable=True)
     add_ent(CONF_CURRENT_SETTING, "number", filterable=True)
 
-    # EV SOC
     evsoc_default = defaults.get(CONF_EV_BATTERY_LEVEL, "")
     if evsoc_default:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL, default=evsoc_default)] = selector(
@@ -231,16 +254,28 @@ def _build_sensors_schema(
     else:
         fields[vol.Optional(CONF_EV_BATTERY_LEVEL)] = selector({"entity": {"domain": "sensor"}})
 
-    # Other controls
     fields[vol.Required(CONF_MAX_CURRENT_LIMIT_A, default=defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))] = selector(num_sel_a)
 
-    # Thresholds
     fields[vol.Required(CONF_ECO_ON_UPPER, default=defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_ON_LOWER, default=defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_UPPER, default=defaults.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))] = selector(num_sel_w)
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
-    # Timers and intervals
+    # ---- Phase switching (EUprofile-only v1) ----
+    if supply_profile == "eu_3ph_400":
+        if bool(defaults.get(CONF_PHASE_SWITCH_SUPPORTED, False)):
+            fields[
+                vol.Required(
+                    CONF_PHASE_MODE_FEEDBACK_SENSOR,
+                    default=defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR, ""),
+                )
+            ] = selector({"entity": {"domain": ["sensor", "input_select"]}})
+
+            fields[vol.Required(CONF_ECO_ON_UPPER_ALT, default=defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))] = selector(num_sel_w)
+            fields[vol.Required(CONF_ECO_ON_LOWER_ALT, default=defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))] = selector(num_sel_w)
+            fields[vol.Required(CONF_ECO_OFF_UPPER_ALT, default=defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))] = selector(num_sel_w)
+            fields[vol.Required(CONF_ECO_OFF_LOWER_ALT, default=defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))] = selector(num_sel_w)
+
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
             "number": {
@@ -254,6 +289,14 @@ def _build_sensors_schema(
     )
     fields[vol.Required(CONF_UPPER_DEBOUNCE_SECONDS, default=defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))] = selector(num_sel_upper_debounce)
     fields[vol.Required(CONF_SUSTAIN_SECONDS, default=defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))] = selector(num_sel_s)
+
+    # ---- Auto phase switching (v1) field ----
+    fields[
+        vol.Required(
+            CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
+            default=defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
+        )
+    ] = selector(num_sel_auto_delay_min)
 
     return vol.Schema(fields)
 
@@ -277,7 +320,6 @@ def _get_registry_name(hass, entity_id: str) -> str:
 
 
 def _find_device_candidates(hass, device_id: str, domain: str) -> list[str]:
-    """Return entity_ids for a device filtered by domain, only enabled entries."""
     if not device_id:
         return []
     ent_reg = er.async_get(hass)
@@ -297,8 +339,13 @@ def _find_device_candidates(hass, device_id: str, domain: str) -> list[str]:
     return out
 
 
-def _prefer_by_keywords(hass, candidates: List[str], include_any: List[str], bonus_any: Optional[List[str]] = None,
-                        exclude_any: Optional[List[str]] = None) -> Tuple[List[str], Dict[str, int]]:
+def _prefer_by_keywords(
+    hass,
+    candidates: List[str],
+    include_any: List[str],
+    bonus_any: Optional[List[str]] = None,
+    exclude_any: Optional[List[str]] = None
+) -> Tuple[List[str], Dict[str, int]]:
     if not candidates:
         return [], {}
     bonus_any = bonus_any or []
@@ -327,7 +374,6 @@ def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[st
         return []
     refined = list(candidates)
     if key == CONF_CHARGE_POWER:
-        # 1) device_class power or unit W/kW
         power_like = []
         for eid in refined:
             st = hass.states.get(eid)
@@ -341,7 +387,6 @@ def _refine_candidates_for_key(hass, candidates: List[str], key: str) -> List[st
             return power_like
         if len(power_like) > 1:
             refined = power_like
-        # 2) preferences by keywords
         refined, _ = _prefer_by_keywords(
             hass,
             refined,
@@ -401,6 +446,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._step1: dict | None = None
         self._s_defaults: dict | None = None
         self._selected_device: Optional[str] = None
+        self._phase_switch_supported_selected: Optional[bool] = None
 
     async def async_step_user(self, user_input=None):
         schema = vol.Schema(
@@ -444,15 +490,43 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ECO_OFF_LOWER: DEFAULT_ECO_OFF_LOWER,
             CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
             CONF_SUSTAIN_SECONDS: DEFAULT_SUSTAIN_SECONDS,
+            # Phase switching defaults
+            CONF_PHASE_SWITCH_SUPPORTED: False,
+            CONF_PHASE_MODE_FEEDBACK_SENSOR: "",
+            CONF_ECO_ON_UPPER_ALT: DEFAULT_ECO_ON_UPPER_ALT,
+            CONF_ECO_ON_LOWER_ALT: DEFAULT_ECO_ON_LOWER_ALT,
+            CONF_ECO_OFF_UPPER_ALT: DEFAULT_ECO_OFF_UPPER_ALT,
+            CONF_ECO_OFF_LOWER_ALT: DEFAULT_ECO_OFF_LOWER_ALT,
+            # Auto phase switching defaults (ONLY ADDITION)
+            CONF_AUTO_PHASE_SWITCH_DELAY_MIN: DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
         }
         return await self.async_step_device()
 
     async def async_step_device(self, user_input=None):
-        schema = vol.Schema({vol.Optional(CONF_DEVICE_ID, default=""): selector({"device": {}})})
+        assert self._step1 is not None
+        profile_key = self._step1.get(CONF_SUPPLY_PROFILE, "eu_1ph_230")
+
+        schema_fields: dict = {
+            vol.Optional(CONF_DEVICE_ID, default=""): selector({"device": {}}),
+        }
+
+        if profile_key == "eu_3ph_400":
+            schema_fields[
+                vol.Optional(
+                    CONF_PHASE_SWITCH_SUPPORTED,
+                    default=bool((self._s_defaults or {}).get(CONF_PHASE_SWITCH_SUPPORTED, False)),
+                )
+            ] = selector({"boolean": {}})
+
+        schema = vol.Schema(schema_fields)
+
         if user_input is None:
             return self.async_show_form(step_id="device", data_schema=schema)
+
         device_id = (user_input.get(CONF_DEVICE_ID) or "").strip()
         self._selected_device = device_id if device_id else None
+        self._phase_switch_supported_selected = bool(user_input.get(CONF_PHASE_SWITCH_SUPPORTED, False)) if profile_key == "eu_3ph_400" else False
+
         return await self.async_step_sensors()
 
     async def async_step_sensors(self, user_input=None):
@@ -465,13 +539,15 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._s_defaults is None:
             self._s_defaults = {}
 
-        # Autofill from selected device (first rendering)
+        if self._phase_switch_supported_selected is not None:
+            self._s_defaults[CONF_PHASE_SWITCH_SUPPORTED] = bool(self._phase_switch_supported_selected)
+
         if user_input is None and self._selected_device:
             _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
 
         if user_input is None:
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -479,7 +555,7 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS, supply_profile=profile_key)
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -489,12 +565,10 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         for k, v in (user_input or {}).items():
             self._s_defaults[k] = v
 
-        # Select band minimum by supply profile (fallback by phases)
         band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
         if band_min is None:
             band_min = MIN_BAND_400 if three_phase else MIN_BAND_230
 
-        # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER, DEFAULT_ECO_ON_LOWER),
@@ -503,7 +577,31 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         errors = _validate_thresholds(thresh_data, band_min)
 
-        # Scan interval
+        if profile_key == "eu_3ph_400":
+            ps = bool(self._s_defaults.get(CONF_PHASE_SWITCH_SUPPORTED, False))
+            if ps:
+                fb = (self._s_defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
+                if not fb:
+                    errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
+
+                alt_thresh_data = {
+                    CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
+                    CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
+                    CONF_ECO_OFF_UPPER: self._s_defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
+                    CONF_ECO_OFF_LOWER: self._s_defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
+                }
+                alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
+                mapping = {
+                    CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
+                    CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
+                    CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
+                    CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
+                }
+                for k, v in alt_errors.items():
+                    errors[mapping.get(k, k)] = v
+            else:
+                self._s_defaults.pop(CONF_PHASE_MODE_FEEDBACK_SENSOR, None)
+
         try:
             si = int(self._s_defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
             if si < MIN_SCAN_INTERVAL:
@@ -511,7 +609,6 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Sustain
         try:
             st = int(self._s_defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
             if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
@@ -519,7 +616,6 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
 
-        # Upper debounce
         try:
             ud = int(self._s_defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))
             if ud < UPPER_DEBOUNCE_MIN_SECONDS or ud > UPPER_DEBOUNCE_MAX_SECONDS:
@@ -527,7 +623,6 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_UPPER_DEBOUNCE_SECONDS] = "value_out_of_range"
 
-        # Max current
         try:
             max_a = int(self._s_defaults.get(CONF_MAX_CURRENT_LIMIT_A, 16))
             if max_a < ABS_MIN_CURRENT_A or max_a > ABS_MAX_CURRENT_A:
@@ -535,12 +630,19 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
+        try:
+            ad = int(self._s_defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
+            if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
+                raise ValueError
+        except Exception:
+            errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
+
         if errors:
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS, supply_profile=profile_key)
             return self.async_show_form(
                 step_id="sensors",
                 data_schema=schema,
@@ -556,7 +658,6 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             data.pop(CONF_GRID_POWER, None)
 
-        # Legacy compat
         data[CONF_WALLBOX_THREE_PHASE] = bool(profile_meta.get("phases", 1) == 3)
 
         if self._selected_device:
@@ -590,6 +691,7 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         self._supply_profile: str | None = None
         self._values: dict | None = None
         self._selected_device: Optional[str] = None
+        self._phase_switch_supported_selected: Optional[bool] = None
 
     async def async_step_init(self, user_input=None):
         eff = _merged(self.config_entry)
@@ -618,14 +720,34 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
     async def async_step_device(self, user_input=None):
         eff = _merged(self.config_entry)
         existing_device = eff.get(CONF_DEVICE_ID, "")
-        schema = vol.Schema(
-            {vol.Optional(CONF_DEVICE_ID, default=existing_device): selector({"device": {}})}
-        )
+
+        profile_key = self._supply_profile if self._supply_profile is not None else eff.get(CONF_SUPPLY_PROFILE, "eu_1ph_230")
+
+        schema_fields: dict = {
+            vol.Optional(CONF_DEVICE_ID, default=existing_device): selector({"device": {}}),
+        }
+
+        if profile_key == "eu_3ph_400":
+            schema_fields[
+                vol.Optional(
+                    CONF_PHASE_SWITCH_SUPPORTED,
+                    default=bool(eff.get(CONF_PHASE_SWITCH_SUPPORTED, False)),
+                )
+            ] = selector({"boolean": {}})
+
+        schema = vol.Schema(schema_fields)
+
         name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
         if user_input is None:
             return self.async_show_form(step_id="device", data_schema=schema, description_placeholders={"name": name})
+
         device_id = (user_input.get(CONF_DEVICE_ID) or "").strip()
         self._selected_device = device_id if device_id else None
+
+        self._phase_switch_supported_selected = (
+            bool(user_input.get(CONF_PHASE_SWITCH_SUPPORTED, False)) if profile_key == "eu_3ph_400" else False
+        )
+
         return await self.async_step_sensors()
 
     async def async_step_sensors(self, user_input=None):
@@ -655,30 +777,38 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
                 CONF_ECO_OFF_LOWER: eff.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER),
                 CONF_SCAN_INTERVAL: eff.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
                 CONF_SUSTAIN_SECONDS: eff.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS),
+                CONF_PHASE_SWITCH_SUPPORTED: eff.get(CONF_PHASE_SWITCH_SUPPORTED, False),
+                CONF_PHASE_MODE_FEEDBACK_SENSOR: eff.get(CONF_PHASE_MODE_FEEDBACK_SENSOR, ""),
+                CONF_ECO_ON_UPPER_ALT: eff.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
+                CONF_ECO_ON_LOWER_ALT: eff.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
+                CONF_ECO_OFF_UPPER_ALT: eff.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
+                CONF_ECO_OFF_LOWER_ALT: eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
+                CONF_AUTO_PHASE_SWITCH_DELAY_MIN: eff.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
             }
+
+        if self._phase_switch_supported_selected is not None:
+            self._values[CONF_PHASE_SWITCH_SUPPORTED] = bool(self._phase_switch_supported_selected)
 
         if user_input is None:
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS, supply_profile=profile_key)
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
 
         for k, v in (user_input or {}).items():
             self._values[k] = v
 
-        # Select band minimum by supply profile (fallback by phases)
         band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
         if band_min is None:
             band_min = MIN_BAND_400 if three_phase else MIN_BAND_230
 
-        # Validate thresholds
         thresh_data = {
             CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER),
             CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER),
@@ -687,7 +817,31 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         }
         errors = _validate_thresholds(thresh_data, band_min)
 
-        # Validate scan interval
+        if profile_key == "eu_3ph_400":
+            ps = bool(self._values.get(CONF_PHASE_SWITCH_SUPPORTED, False))
+            if ps:
+                fb = (self._values.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
+                if not fb:
+                    errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
+
+                alt_thresh_data = {
+                    CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
+                    CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
+                    CONF_ECO_OFF_UPPER: self._values.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
+                    CONF_ECO_OFF_LOWER: self._values.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
+                }
+                alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
+                mapping = {
+                    CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
+                    CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
+                    CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
+                    CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
+                }
+                for k, v in alt_errors.items():
+                    errors[mapping.get(k, k)] = v
+            else:
+                self._values.pop(CONF_PHASE_MODE_FEEDBACK_SENSOR, None)
+
         try:
             si = int(self._values.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
             if si < MIN_SCAN_INTERVAL:
@@ -695,7 +849,6 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_SCAN_INTERVAL] = "value_out_of_range"
 
-        # Validate sustain
         try:
             st = int(self._values.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))
             if st < SUSTAIN_MIN_SECONDS or st > SUSTAIN_MAX_SECONDS:
@@ -703,7 +856,6 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_SUSTAIN_SECONDS] = "value_out_of_range"
 
-        # Validate upper debounce
         try:
             ud = int(self._values.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))
             if ud < UPPER_DEBOUNCE_MIN_SECONDS or ud > UPPER_DEBOUNCE_MAX_SECONDS:
@@ -711,7 +863,6 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_UPPER_DEBOUNCE_SECONDS] = "value_out_of_range"
 
-        # Max current
         try:
             max_a = int(self._values.get(CONF_MAX_CURRENT_LIMIT_A, 16))
             if max_a < ABS_MIN_CURRENT_A or max_a > ABS_MAX_CURRENT_A:
@@ -719,17 +870,26 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
+        # Validate auto delay in options too (ONLY ADDITION)
+        try:
+            ad = int(self._values.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
+            if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
+                raise ValueError
+        except Exception:
+            errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
+
         if errors:
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS)
+                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS, supply_profile=profile_key)
             name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
             return self.async_show_form(step_id="sensors", data_schema=schema, errors=errors, description_placeholders={"name": name})
 
+        # IMPORTANT: keep original behavior: update ONLY options
         new_opts = dict(self.config_entry.options)
         new_opts[CONF_GRID_SINGLE] = bool(grid_single)
         new_opts[CONF_SUPPLY_PROFILE] = profile_key
