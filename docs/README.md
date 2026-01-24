@@ -29,19 +29,20 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
 - [6. Priority charging behavior](#6-priority-charging-behavior)  
 - [7. Priority order numbering](#7-priority-order-numbering)  
-- [8. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-on-vs-eco-off-and-max-peak-avg)  
-- [9. Automatic regulation (regulation loop)](#9-automatic-regulation-regulation-loop)  
-- [10. SoC limit](#10-soc-limit)  
-- [11. Planner window (start/stop datetimes)](#11-planner-window-startstop-datetimes)  
-- [12. Sustain timers (below-lower / no-data)](#12-sustain-timers-below-lower--no-data)  
-- [13. Manual vs Start/Stop modes](#13-manual-vs-startstop-modes)  
-- [14. Events and bus signals](#14-events-and-bus-signals)  
-- [15. Entities overview](#15-entities-overview)  
-- [16. Unknown/unavailable detection](#16-unknownunavailable-detection)
-- [17. Safety: external charging_enable OFF detection](#17-safety-external-charging_enable-OFF-detection) 
-- [18. Common scenarios](#18-common-scenarios)  
-- [19. Use Case Example](#19-use-case-example)
-- [20. Troubleshooting](#20-troubleshooting)
+- [8. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-on-vs-eco-off-and-max-peak-avg)
+- [9. Phase switching](#9-phase-switching)  
+- [10. Automatic regulation (regulation loop)](#10-automatic-regulation-regulation-loop)  
+- [11. SoC limit](#11-soc-limit)  
+- [12. Planner window (start/stop datetimes)](#12-planner-window-startstop-datetimes)  
+- [13. Sustain timers (below-lower / no-data)](#13-sustain-timers-below-lower--no-data)  
+- [14. Manual vs Start/Stop modes](#14-manual-vs-startstop-modes)  
+- [15. Events and bus signals](#15-events-and-bus-signals)  
+- [16. Entities overview](#16-entities-overview)  
+- [17. Unknown/unavailable detection](#17-unknownunavailable-detection)
+- [18. Safety: external charging_enable OFF detection](#18-safety-external-charging_enable-OFF-detection) 
+- [19. Common scenarios](#19-common-scenarios)  
+- [20. Use Case Example](#20-use-case-example)
+- [21. Troubleshooting](#21-troubleshooting)
 
 ---
 
@@ -304,7 +305,59 @@ Max Peak avg:
 
 ---
 
-## 9) Automatic regulation (regulation loop)
+## 9) Phase switching
+
+EVCM can control single-phase (1p) vs three-phase (3p) charging if your wallbox/setup supports phase switching.
+
+### Modes
+
+- **Auto**: EVCM may switch phases automatically based on grid conditions (see below).
+- **Force 3p**: Always request/assume 3-phase charging.
+- **Force 1p**: Always request/assume 1-phase charging.
+
+> Note: The actual phase change is performed by your own automation/listener reacting to the integration event: `PHASE_SWITCH_REQUEST_EVENT`.
+
+### Auto phase switching (event-driven)
+
+Auto phase switching is **event-driven**: it is evaluated only when relevant sensor updates/events occur (e.g. grid/net power, charge power/status, phase feedback).
+This means the configured delay is a **minimum**; the switch will happen on the **first evaluation after the delay has elapsed**.
+
+Auto switching is only considered when charging is allowed (same “may I charge?” gating as the controller):
+Start/Stop enabled, cable connected, planner window allowed, SoC allowed, priority allowed, and essential data available.
+If any of these become false, pending auto-switch candidates are cleared.
+
+#### 3p → 1p (stopped-based)
+
+EVCM considers switching from 3p to 1p only when:
+- charging was previously stopped due to `below_lower` (latched stop reason),
+- charging is currently OFF,
+- grid/net power is in the **switch window**:
+
+  `upper_alt ≤ net < current_upper`
+
+Where:
+- `upper_alt` = configured ALT upper threshold (Eco On/Off Upper Alt),
+- `current_upper` = the currently effective upper threshold used for resuming (may include Max Peak Avg override).
+
+The condition must remain continuously true for the configured delay (timer resets when it becomes false).
+If `net ≥ current_upper`, resuming in the current phase has priority and no phase switch is requested.
+
+#### 1p → 3p
+
+EVCM considers switching from 1p to 3p only when:
+- currently in 1p,
+- current is at maximum,
+- available headroom is sufficient: `(net + charge_power) ≥ (3p_upper + margin)`,
+- delay has elapsed.
+
+### Sensor update frequency
+
+Because Auto switching is event-driven, a stalled or very slow-updating grid/net sensor can delay (or prevent) automatic phase switching.
+Use a grid/net sensor with a reasonable update frequency (multiple updates per minute recommended).
+
+---
+
+## 10) Automatic regulation (regulation loop)
 
 Runs every `scan_interval` seconds when all of these are true:
 - Start/Stop = ON
@@ -326,7 +379,7 @@ Regulation logic:
 
 ---
 
-## 10) SoC limit
+## 11) SoC limit
 
 Number entity: “{Entry Name} SoC limit” (0–100 %, integer, unit “%”).
 
@@ -345,7 +398,7 @@ You have two simple ways to effectively disable SoC-based pausing without changi
 
 ---
 
-## 11) Planner window (start/stop datetimes)
+## 12) Planner window (start/stop datetimes)
 
 DateTime entities:
 - “{Entry Name} planner start”
@@ -364,7 +417,7 @@ Date rollover:
 
 ---
 
-## 12) Sustain timers (below-lower / no-data)
+## 13) Sustain timers (below-lower / no-data)
 
 If `sustain time` > 0:
 - Below-lower: if net < lower continuously for ≥ sustain time → pause
@@ -375,7 +428,7 @@ The timers are canceled/reset when conditions no longer apply.
 
 ---
 
-## 13) Manual vs Start/Stop modes
+## 14) Manual vs Start/Stop modes
 
 | Aspect                | Start/Stop (ON)                   | Manual (ON)                                                 |
 |-----------------------|-----------------------------------|-------------------------------------------------------------|
@@ -389,7 +442,7 @@ Manual is intended for “force charging” scenarios but still respects planner
 
 ---
 
-## 14) Events and bus signals
+## 15) Events and bus signals
 
 - `evcm_priority_refresh`: fired on any global priority/order/mode change and on each order update. UI and entities (numbers/switches) listen to this to refresh immediately.
 - `evcm_unknown_state`: emitted when unknown/unavailable sensor states are encountered (with debouncing and startup grace).
@@ -399,7 +452,7 @@ You can observe these in Developer Tools → Events.
 
 ---
 
-## 15) Entities overview
+## 16) Entities overview
 
 Per entry:
 
@@ -431,7 +484,7 @@ You will also configure references to:
 
 ---
 
-## 16) Unknown/unavailable detection
+## 17) Unknown/unavailable detection
 
 The controller reports unknown/unavailable transitions per sensor with:
 - A startup grace period to reduce noise
@@ -442,7 +495,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 17) Safety: external `charging_enable` OFF detection
+## 18) Safety: external `charging_enable` OFF detection
 
 EVCM detects when the configured `charging_enable` switch is turned **OFF externally** (by the wallbox itself, the vendor app, another integration, or an automation) while the EV cable is connected.
 (If you have an automation that toggles the same `charging_enable` entity, consider using the EVCM **Start/Stop** switch instead).
@@ -463,7 +516,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 18) Common scenarios
+## 19) Common scenarios
 
 1. Two wallboxes, Priority OFF  
    Both may regulate independently (no priority gating).
@@ -493,7 +546,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 19) Use Case Example
+## 20) Use Case Example
 
 Use Case Example with ECO mode ON:
 
@@ -512,7 +565,7 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 
 ---
 
-## 20) Troubleshooting
+## 21) Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
