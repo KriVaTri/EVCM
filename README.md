@@ -25,7 +25,7 @@ You set a few numbers and switches; it does the boring part.
 
 ## Example of a typical EVCM entry
 
-<img width="300" height="446" alt="EVCM image small" src="https://github.com/user-attachments/assets/a33f9f99-fd3c-48ac-8895-3557ba2d1c4a" />
+<img width="300" height="446" alt="EVCM image small" src="https://github.com/user-attachments/assets/e20bf7fc-0b55-41d8-8de0-4e236463c52f" />
 
 ---
 
