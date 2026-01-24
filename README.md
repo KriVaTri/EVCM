@@ -17,6 +17,7 @@
 - Can restrict charging to a time window (planner)
 - Can handle more than one wallbox with or without a priority order (who gets to charge first)
 - Lets you force charging manually if you just want to plug in and go
+- Supports phase switching for even better load balancing
 
 You set a few numbers and switches; it does the boring part.
 
@@ -79,7 +80,7 @@ instructions are available in: [docs/README.md](docs/README.md#compatibility-and
 During the config flow:
 1. Pick a name and how you provide net power (single net sensor vs export + import)
 2. Choose 1‑phase or 3‑phase (affects minimum power math)
-3. Select your wallbox (optional)
+3. Select your wallbox (optional) and phase switching support (optional)
 4. Map the charger and grid sensors
 5. Enter two threshold bands:  
    - ECO ON (used when the ECO switch is ON)  
