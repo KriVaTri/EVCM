@@ -138,6 +138,10 @@ from .const import (
     OTHER_CHARGING_CHECK_RETRIES,
     OTHER_CHARGING_CHECK_INTERVAL_S,
     CE_VERIFY_DELAY_S,
+    CONF_PHASE_SWITCH_CONTROL_MODE,
+    PHASE_CONTROL_INTEGRATION,
+    PHASE_CONTROL_WALLBOX,
+    DEFAULT_PHASE_SWITCH_CONTROL_MODE,
 )
 
 from .priority import (
@@ -304,6 +308,12 @@ class EVLoadController:
         self._phase_switch_lock: asyncio.Lock = asyncio.Lock()
         self._phase_switch_in_progress: bool = False
 
+        # Phase switching control mode (from config)
+        self._phase_switch_control_mode: str = eff.get(
+            CONF_PHASE_SWITCH_CONTROL_MODE, 
+            DEFAULT_PHASE_SWITCH_CONTROL_MODE
+        )
+
         # Wallclock UTC datetime (persisted via unified Store)
         self._phase_cooldown_until_utc: Optional[datetime] = None
         self._phase_cooldown_active_target: Optional[str] = None  # "1p"/"3p" for UI revert/context
@@ -367,7 +377,10 @@ class EVLoadController:
             self._ce_external_last_on_ts = self.entry.options.get(OPT_EXTERNAL_LAST_ON_TS)
 
         if self._ce_external_off_latched:
-            _LOGGER.warning("EVCM %s: restored external OFF latch from previous run", self._log_name())
+            if self._phase_switch_control_mode == PHASE_CONTROL_WALLBOX:
+                _LOGGER.debug("EVCM %s: restored external OFF latch from previous run (wallbox-controlled mode)", self._log_name())
+            else:
+                _LOGGER.warning("EVCM %s: restored external OFF latch from previous run", self._log_name())
 
         # Recreate persistent notifications after restart/reload (HA may not restore them)
         try:
@@ -380,46 +393,50 @@ class EVLoadController:
                 return dt_util.as_local(dt_util.utc_from_timestamp(float(ts))).strftime("%Y-%m-%d %H:%M:%S")
 
             if self._ce_external_last_on_ts:
-                msg_on = (
-                    f"External charging_enable ON detected for {device_name}\n"
-                    f"Last external ON: {_fmt_ts(self._ce_external_last_on_ts)}\n"
-                    "External OFF latch cleared: yes\n"
-                    "Charging can resume."
-                )
-                self.hass.async_create_task(
-                    self.hass.services.async_call(
-                        "persistent_notification",
-                        "create",
-                        {
-                            "title": "EVCM: External ON detected",
-                            "message": msg_on,
-                            "notification_id": f"evcm_external_on_{self.entry.entry_id}",
-                        },
-                        blocking=False,
+                # Suppress notification in wallbox-controlled phase switch mode
+                if self._phase_switch_control_mode != PHASE_CONTROL_WALLBOX:
+                    msg_on = (
+                        f"External charging_enable ON detected for {device_name}\n"
+                        f"Last external ON: {_fmt_ts(self._ce_external_last_on_ts)}\n"
+                        "External OFF latch cleared: yes\n"
+                        "Charging can resume."
                     )
-                )
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "persistent_notification",
+                            "create",
+                            {
+                                "title": "EVCM: External ON detected",
+                                "message": msg_on,
+                                "notification_id": f"evcm_external_on_{self.entry.entry_id}",
+                            },
+                            blocking=False,
+                        )
+                    )
 
             if self._ce_external_last_off_ts or self._ce_external_off_latched:
-                msg_off = (
-                    f"External charging_enable OFF detected for {device_name}\n"
-                    f"Last external OFF: {_fmt_ts(self._ce_external_last_off_ts)}\n"
-                    f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
-                    "To reset, unplug the EV.\n"
-                    "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
-                    "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
-                )
-                self.hass.async_create_task(
-                    self.hass.services.async_call(
-                        "persistent_notification",
-                        "create",
-                        {
-                            "title": "EVCM: External OFF detected",
-                            "message": msg_off,
-                            "notification_id": f"evcm_external_off_{self.entry.entry_id}",
-                        },
-                        blocking=False,
+                # Suppress notification in wallbox-controlled phase switch mode
+                if self._phase_switch_control_mode != PHASE_CONTROL_WALLBOX:
+                    msg_off = (
+                        f"External charging_enable OFF detected for {device_name}\n"
+                        f"Last external OFF: {_fmt_ts(self._ce_external_last_off_ts)}\n"
+                        f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                        "To reset, unplug the EV.\n"
+                        "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                        "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
                     )
-                )
+                    self.hass.async_create_task(
+                        self.hass.services.async_call(
+                            "persistent_notification",
+                            "create",
+                            {
+                                "title": "EVCM: External OFF detected",
+                                "message": msg_off,
+                                "notification_id": f"evcm_external_off_{self.entry.entry_id}",
+                            },
+                            blocking=False,
+                        )
+                    )
         except Exception:
             _LOGGER.debug("EVCM: failed to recreate external ON/OFF notifications on init", exc_info=True)
 
@@ -885,6 +902,14 @@ class EVLoadController:
         except Exception:
             self._auto_last_stop_ts_utc = None
 
+        # Phase last requested target (for auto mode mismatch detection)
+        try:
+            tgt = self._state.get("phase_last_requested_target")
+            tgt = str(tgt).strip().lower() if tgt else None
+            self._phase_last_requested_target = tgt if tgt in ("1p", "3p") else None
+        except Exception:
+            self._phase_last_requested_target = None
+
         self._state_loaded = True
 
     async def _save_unified_state(self):
@@ -901,6 +926,7 @@ class EVLoadController:
             "net_power_target_w": self._net_power_target_w,
             "auto_unlock_enabled": bool(self._auto_unlock_enabled),
             "ext_import_limit_w": self._ext_import_limit_w if self._ext_import_limit_w is not None else None,
+            "phase_last_requested_target": self._phase_last_requested_target,
             CONF_PHASE_SWITCH_AUTO_ENABLED: bool(self._phase_switch_auto_enabled),
             CONF_PHASE_SWITCH_FORCED_PROFILE: self._phase_switch_forced_profile,
 
@@ -1049,9 +1075,44 @@ class EVLoadController:
         eff = _effective_config(self.entry)
         return bool(eff.get(CONF_PHASE_SWITCH_SUPPORTED, False))
 
+    def _is_wallbox_controlled_phase_switch(self) -> bool:
+        """Check if phase switching is controlled by the wallbox (not integration)."""
+        if not self._phase_switch_supported():
+            return False
+        return self._phase_switch_control_mode == PHASE_CONTROL_WALLBOX
+
+    def _expected_phase_for_mismatch_check(self) -> Optional[str]:
+        """Return the expected phase for mismatch detection (integration-controlled only)."""
+        if self._is_wallbox_controlled_phase_switch():
+            return None
+        
+        if not self._phase_switch_supported():
+            return None
+        
+        # During active request, use the request target
+        if self._phase_target in ("1p", "3p"):
+            return self._phase_target
+        
+        # Auto mode check
+        if self._phase_switch_auto_enabled:
+            if self._phase_last_requested_target in ("1p", "3p"):
+                return self._phase_last_requested_target
+            # No previous request in auto mode: expect primary profile (3p)
+            return "3p"
+        
+        # Forced mode: expect feedback to match the forced profile
+        return "1p" if self._phase_switch_forced_profile == PHASE_PROFILE_ALTERNATE else "3p"
+
     def get_phase_switch_mode(self) -> str:
-        # We persist these always, but if feature is not enabled in config/options,
-        # we expose a safe effective mode: Force 3P.
+        # Wallbox-controlled: return descriptive mode based on current feedback
+        if self._is_wallbox_controlled_phase_switch():
+            if self._phase_feedback_value == "1p":
+                return PHASE_SWITCH_MODE_FORCE_1P
+            elif self._phase_feedback_value == "3p":
+                return PHASE_SWITCH_MODE_FORCE_3P
+            return PHASE_SWITCH_MODE_AUTO  # or "Unknown" - feedback not yet known
+
+        # Integration-controlled: existing logic
         if not self._phase_switch_supported():
             return "Force 3p"
 
@@ -1062,16 +1123,41 @@ class EVLoadController:
 
     def set_phase_switch_auto_enabled(self, enabled: bool) -> None:
         self._phase_switch_auto_enabled = bool(enabled)
-        self._create_task(self._save_unified_state_debounced())
+        
+        if enabled:
+            # If there's an active switch request, adopt that target
+            # Otherwise, accept current feedback as the starting point
+            if self._phase_target in ("1p", "3p"):
+                self._phase_last_requested_target = self._phase_target
+            elif self._phase_feedback_value in ("1p", "3p"):
+                self._phase_last_requested_target = self._phase_feedback_value
+            else:
+                self._phase_last_requested_target = None
+        else:
+            # Switching to forced mode, clear auto's last request
+            self._phase_last_requested_target = None
+
+        self._create_task(self._save_unified_state())
         self._reconcile_phase_feedback_notify()
         self._notify_mode_listeners()
+        
+        # Re-evaluate thresholds
+        self._create_task(self._hysteresis_apply())
 
     async def async_force_phase_profile(self, *, alternate: bool) -> None:
-        # Only stores user intent for now.
-        self._phase_switch_forced_profile = PHASE_PROFILE_ALTERNATE if alternate else PHASE_PROFILE_PRIMARY
+        """Set the forced phase profile (user intent via UI)."""
+        new_profile = PHASE_PROFILE_ALTERNATE if alternate else PHASE_PROFILE_PRIMARY
+        self._phase_switch_forced_profile = new_profile
+        
+        # Set last_requested_target for mismatch tracking
+        self._phase_last_requested_target = "1p" if alternate else "3p"
+        
         self._create_task(self._save_unified_state_debounced())
         self._reconcile_phase_feedback_notify()
         self._notify_mode_listeners()
+        
+        # Re-evaluate thresholds with new expectation
+        self._create_task(self._hysteresis_apply())
 
     def _phase_cooldown_active(self) -> bool:
         until = self._phase_cooldown_until_utc
@@ -1147,29 +1233,21 @@ class EVLoadController:
             _LOGGER.debug("Failed to create phase cooldown notification", exc_info=True)
 
     def _phase_notify_problem_active(self) -> bool:
+        """Check if there's a phase-related problem that should trigger notification."""
         new_val = self._phase_feedback_value
 
-        expected_request = (self._phase_target or self._phase_last_requested_target or "").strip().lower()
-        expected_config = (self._phase_expected_from_config() or "").strip().lower()
+        # Wallbox-controlled: only notify on unknown feedback
+        if self._is_wallbox_controlled_phase_switch():
+            return new_val not in ("1p", "3p")
 
-        if expected_request not in ("1p", "3p"):
-            expected_request = ""
-        if expected_config not in ("1p", "3p"):
-            expected_config = ""
-
-        # Unknown feedback -> problem
+        # Integration-controlled: notify on unknown OR mismatch
         if new_val not in ("1p", "3p"):
             return True
 
-        # Request expectation has priority
-        if expected_request:
-            return new_val != expected_request
+        expected = self._expected_phase_for_mismatch_check()
+        if expected in ("1p", "3p") and new_val != expected:
+            return True
 
-        # Otherwise check forced-config expectation (only if it exists)
-        if expected_config:
-            return new_val != expected_config
-
-        # No expectation and feedback is known -> OK
         return False
 
     def _reconcile_phase_feedback_notify(self) -> None:
@@ -1330,22 +1408,65 @@ class EVLoadController:
         if new_val == self._phase_feedback_value:
             return
 
+        prev_val = self._phase_feedback_value
+        
         # Update feedback
         self._phase_feedback_value = new_val
 
-        # Determine mismatch vs expected request target (only if we have a target)
+        # Wallbox-controlled: internal profile follows feedback automatically
+        if self._is_wallbox_controlled_phase_switch() and new_val in ("1p", "3p"):
+            new_profile = PHASE_PROFILE_ALTERNATE if new_val == "1p" else PHASE_PROFILE_PRIMARY
+            if self._phase_switch_forced_profile != new_profile:
+                self._phase_switch_forced_profile = new_profile
+                self._create_task(self._save_unified_state_debounced())
+                _LOGGER.info(
+                    "EVCM %s: Wallbox-controlled phase switch detected: feedback=%s -> internal profile=%s",
+                    self._log_name(), new_val, new_profile
+                )
+            
+            # Wallbox-controlled: no mismatch concept, just follow feedback
+            self._phase_fallback_active = (new_val not in ("1p", "3p"))
+            
+            # UI status update
+            if new_val in ("1p", "3p"):
+                self._phase_status_value = new_val
+            else:
+                self._phase_status_value = "Unknown"
+            
+            # Sync notification timer
+            self._reconcile_phase_feedback_notify()
+            
+            # Apply control changes
+            self._create_task(self._hysteresis_apply())
+            self._start_regulation_loop_if_needed()
+            self._notify_mode_listeners()
+            self._create_task(self._auto_evaluate_and_maybe_switch())
+            return
+
+        # Integration-controlled: check for mismatch with expected phase
+        expected = self._expected_phase_for_mismatch_check()
+        
         mismatch = (
-            self._phase_target in ("1p", "3p")
+            expected in ("1p", "3p")
             and new_val in ("1p", "3p")
-            and new_val != self._phase_target
+            and new_val != expected
         )
 
-        # Fallback/problem active if unknown OR mismatch
+        # Fallback active if unknown OR mismatch
         self._phase_fallback_active = (new_val not in ("1p", "3p")) or mismatch
+
+        if mismatch:
+            _LOGGER.warning(
+                "EVCM %s: Phase mismatch detected: expected=%s, feedback=%s -> using conservative 3p thresholds",
+                self._log_name(), expected, new_val
+            )
 
         # UI status update
         if new_val in ("1p", "3p"):
-            self._phase_status_value = new_val
+            if mismatch:
+                self._phase_status_value = f"{new_val} (mismatch)"
+            else:
+                self._phase_status_value = new_val
         else:
             # Only show Unknown if we are not actively switching
             if self._phase_target is None:
@@ -1355,13 +1476,16 @@ class EVLoadController:
         self._reconcile_phase_feedback_notify()
 
         # If feedback now matches what we expected, clear the pending request markers
-        expected_request = (self._phase_target or self._phase_last_requested_target or "").strip().lower()
-        if expected_request in ("1p", "3p") and new_val == expected_request:
+        # BUT: in Auto mode, keep last_requested_target as our reference
+        if expected in ("1p", "3p") and new_val == expected:
             self._phase_target = None
-            self._phase_last_requested_target = None
             self._phase_last_request_ts = None
+            
+            # Only clear last_requested_target in forced mode, not in auto mode
+            if not self._phase_switch_auto_enabled:
+                self._phase_last_requested_target = None
 
-            # Now that mismatch can be resolved, sync timer/notification again
+            # Now that mismatch is resolved, sync timer/notification again
             self._reconcile_phase_feedback_notify()
 
         # Apply control changes
@@ -1381,6 +1505,11 @@ class EVLoadController:
 
         if not self._phase_switch_supported():
             _LOGGER.debug("EVCM %s: Phase switch request ignored (feature disabled)", self._log_name())
+            return False
+
+        # Wallbox-controlled: reject all phase switch requests from integration
+        if self._is_wallbox_controlled_phase_switch():
+            _LOGGER.debug("EVCM %s: Phase switch request rejected (wallbox-controlled mode)", self._log_name())
             return False
 
         # Quick reject if switch already in progress (don't wait for lock)
@@ -1691,9 +1820,15 @@ class EVLoadController:
         if not self._phase_switch_supported():
             return True
 
+        # Wallbox-controlled: integration should never auto-switch
+        if self._is_wallbox_controlled_phase_switch():
+            return True
+
         # Auto only runs if user selected Auto in the select entity (persisted flag)
         if not bool(self._phase_switch_auto_enabled):
             return True
+
+        # ... rest van de methode blijft ongewijzigd ...
 
         # Start/Stop must be ON (otherwise we should not act at all)
         if not self.get_mode(MODE_START_STOP):
@@ -2203,6 +2338,15 @@ class EVLoadController:
                 if self._phase_target is None:
                     self._phase_status_value = "Unknown"
 
+            # In Auto mode without a previous request, accept current feedback as starting point
+            if self._phase_switch_auto_enabled and self._phase_last_requested_target is None:
+                if self._phase_feedback_value in ("1p", "3p"):
+                    self._phase_last_requested_target = self._phase_feedback_value
+                    _LOGGER.debug(
+                        "EVCM %s: Startup auto mode: setting last_requested_target=%s from feedback",
+                        self._log_name(), self._phase_feedback_value
+                    )
+
             # fallback is active when unknown OR mismatch
             self._phase_fallback_active = self._phase_notify_problem_active()
 
@@ -2497,11 +2641,37 @@ class EVLoadController:
         """EU-only phase-switch aware profile key for regulation math (regMin + inc/dec thresholds).
 
         - If phase switching isn't supported: use configured profile.
-        - If feedback confirms 1p: use EU 1p profile for regulation calculations.
+        - For wallbox-controlled: follow feedback directly.
+        - For integration-controlled: use conservative 3p profile on mismatch/unknown.
+        - If feedback confirms 1p (and no mismatch): use EU 1p profile.
         - Otherwise: use configured profile (typically EU 3p profile).
         """
         if not self._phase_switch_supported():
             return self._supply_profile_key
+        
+        # Wallbox-controlled: always follow feedback
+        if self._is_wallbox_controlled_phase_switch():
+            if self._phase_feedback_value == "1p":
+                return "eu_1ph_230"
+            return self._supply_profile_key
+        
+        # Integration-controlled: use conservative profile on mismatch/unknown
+        # This must match the logic in _use_alt_thresholds()
+        
+        # Unknown feedback -> conservative 3p
+        if self._phase_feedback_value not in ("1p", "3p"):
+            return self._supply_profile_key
+        
+        # Check for mismatch
+        expected = self._expected_phase_for_mismatch_check()
+        if expected is not None and self._phase_feedback_value != expected:
+            return self._supply_profile_key  # Mismatch -> conservative 3p
+        
+        # Fallback flag active -> conservative 3p
+        if self._phase_fallback_active:
+            return self._supply_profile_key
+        
+        # No mismatch, feedback is valid -> follow feedback
         if self._phase_feedback_value == "1p":
             return "eu_1ph_230"
         return self._supply_profile_key
@@ -2564,19 +2734,31 @@ class EVLoadController:
                     self._ce_on_blocked_logged = False
                     self._ce_external_last_on_ts = dt_util.utcnow().timestamp()
                     self._create_task(self._persist_external_off_state())
-                    _LOGGER.warning("EVCM %s: external OFF latch cleared by external ON (entity=%s)", self._log_name(), self._charging_enable_entity)
+                    
+                    if self._is_wallbox_controlled_phase_switch():
+                        _LOGGER.debug(
+                            "EVCM %s: external OFF latch cleared by external ON (wallbox-controlled mode, entity=%s)",
+                            self._log_name(), self._charging_enable_entity
+                        )
+                    else:
+                        _LOGGER.warning(
+                            "EVCM %s: external OFF latch cleared by external ON (entity=%s)",
+                            self._log_name(), self._charging_enable_entity
+                        )
 
-                    msg = (
-                        f"External charging_enable ON detected for {device_name}\n"
-                        f"Last external ON: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                        "External OFF latch cleared: yes\n"
-                        "Charging can resume."
-                    )
-                    self._notify_persistent_fire_and_forget(
-                        "EVCM: External ON detected",
-                        msg,
-                        self._external_on_notification_id(),
-                    )
+                    # Suppress notification in wallbox-controlled phase switch mode
+                    if not self._is_wallbox_controlled_phase_switch():
+                        msg = (
+                            f"External charging_enable ON detected for {device_name}\n"
+                            f"Last external ON: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            "External OFF latch cleared: yes\n"
+                            "Charging can resume."
+                        )
+                        self._notify_persistent_fire_and_forget(
+                            "EVCM: External ON detected",
+                            msg,
+                            self._external_on_notification_id(),
+                        )
 
                 # External OFF detection + latch (only when EVCM wants ON now)
                 if str(new.state) == STATE_OFF:
@@ -2613,33 +2795,49 @@ class EVLoadController:
                                         else "unknown"
                                     )
                                     age_s = now - float(self._ce_last_intent_ts or 0.0)
-                                    _LOGGER.warning(
-                                        "EVCM %s: external OFF latched until cable disconnect. entity=%s last_intent=%s age=%.1fs",
-                                        self._log_name(), 
-                                        self._charging_enable_entity, 
-                                        last_intent, age_s
-                                    )
+                                    
+                                    if self._is_wallbox_controlled_phase_switch():
+                                        _LOGGER.debug(
+                                            "EVCM %s: external OFF latched (wallbox-controlled mode). entity=%s last_intent=%s age=%.1fs",
+                                            self._log_name(), 
+                                            self._charging_enable_entity, 
+                                            last_intent, age_s
+                                        )
+                                    else:
+                                        _LOGGER.warning(
+                                            "EVCM %s: external OFF latched until cable disconnect. entity=%s last_intent=%s age=%.1fs",
+                                            self._log_name(), 
+                                            self._charging_enable_entity, 
+                                            last_intent, age_s
+                                        )
 
                                 # Notify OFF (dedupe with cooldown)
                                 if (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
                                     self._ce_external_off_last_notify_ts = now
 
-                                    msg = (
-                                        f"External charging_enable OFF detected for {device_name}\n"
-                                        f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                        f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
-                                        "To reset, unplug the EV.\n"
-                                        "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
-                                        "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
-                                    )
+                                    # Suppress notification in wallbox-controlled phase switch mode
+                                    if self._is_wallbox_controlled_phase_switch():
+                                        _LOGGER.debug(
+                                            "EVCM %s: External OFF notification suppressed (wallbox-controlled mode)",
+                                            self._log_name()
+                                        )
+                                    else:
+                                        msg = (
+                                            f"External charging_enable OFF detected for {device_name}\n"
+                                            f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                            f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                                            "To reset, unplug the EV.\n"
+                                            "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                                            "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
+                                        )
 
-                                    _LOGGER.warning("EVCM %s: %s", self._log_name(), msg.replace("\n", " | "))
+                                        _LOGGER.warning("EVCM %s: %s", self._log_name(), msg.replace("\n", " | "))
 
-                                    self._notify_persistent_fire_and_forget(
-                                        "EVCM: External OFF detected",
-                                        msg,
-                                        self._external_off_notification_id(),
-                                    )
+                                        self._notify_persistent_fire_and_forget(
+                                            "EVCM: External OFF detected",
+                                            msg,
+                                            self._external_off_notification_id(),
+                                        )
 
         except Exception:
             _LOGGER.debug("EVCM: external OFF detection/latch failed", exc_info=True)
@@ -3253,9 +3451,33 @@ class EVLoadController:
 
     # ---------------- Hysteresis logic ----------------
     def _use_alt_thresholds(self) -> bool:
-        """ALT thresholds are for EU 1P. Use them only when phase feedback is explicitly '1p'."""
+        """ALT thresholds are for EU 1P. Use them only when:
+        - Phase feedback is explicitly '1p' AND
+        - There is no mismatch/fallback active (for integration-controlled)
+        
+        For wallbox-controlled: always follow feedback directly (no mismatch concept).
+        For integration-controlled: fallback to 3p (primary/conservative) when uncertain.
+        """
         if not self._phase_switch_supported():
             return False
+        
+        # Wallbox-controlled: always follow feedback directly
+        if self._is_wallbox_controlled_phase_switch():
+            return self._phase_feedback_value == "1p"
+        
+        # Unknown feedback -> conservative 3p
+        if self._phase_feedback_value not in ("1p", "3p"):
+            return False
+        
+        # Check for mismatch with expected phase
+        expected = self._expected_phase_for_mismatch_check()
+        if expected is not None and self._phase_feedback_value != expected:
+            return False
+        
+        # Explicit fallback flag
+        if self._phase_fallback_active:
+            return False
+        
         return self._phase_feedback_value == "1p"
 
     def _current_lower(self) -> float:
@@ -3269,7 +3491,6 @@ class EVLoadController:
             return float(eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))
 
         return self._eco_on_lower if self.get_mode(MODE_ECO) else self._eco_off_lower
-
 
     def _current_upper(self) -> float:
         if self._max_peak_override_active():
@@ -3661,20 +3882,51 @@ class EVLoadController:
                 missing = self._current_missing_components()
                 soc = self._get_ev_soc_percent()
                 conf_max_a = self._max_current_a()
-                # Phase-aware regulation minimum:
-                # use 1p minimum when feedback confirms 1p, otherwise use configured supply profile
-                if self._phase_switch_supported() and self._phase_feedback_value == "1p":
-                    reg_min = int(SUPPLY_PROFILES["eu_1ph_230"].get("regulation_min_w", 1300))
-                else:
-                    reg_profile_key = self._effective_reg_profile_key()
-                    reg_min = int((SUPPLY_PROFILES.get(reg_profile_key) or {}).get("regulation_min_w", self._effective_regulation_min_power()))
+                # Phase-aware regulation:
+                # - inc/dec thresholds: use effective profile (conservative 3p on mismatch/unknown)
+                # - regMin: follows FEEDBACK (actual charging state) to know if wallbox is stable
+                
+                reg_profile_key = self._effective_reg_profile_key()
+                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(reg_profile_key) or {}
+                inc_export = float(thr.get("export_inc_w", 250))
+                dec_import = float(thr.get("import_dec_w", 0))
 
+                # regMin: use lowest value when fallback/mismatch to ensure regulation can work
+                # Conservative inc/dec thresholds (3p) already prevent aggressive adjustments
+                if self._phase_switch_supported():
+                    if self._phase_fallback_active or self._phase_feedback_value not in ("1p", "3p"):
+                        # Mismatch or unknown: use lowest regMin so regulation can work
+                        reg_min = int(SUPPLY_PROFILES["eu_1ph_230"].get("regulation_min_w", 1300))
+                    elif self._phase_feedback_value == "1p":
+                        reg_min = int(SUPPLY_PROFILES["eu_1ph_230"].get("regulation_min_w", 1300))
+                    else:
+                        # feedback = 3p, no mismatch
+                        reg_min = int(SUPPLY_PROFILES["eu_3ph_400"].get("regulation_min_w", 3900))
+                else:
+                    # No phase switching: use configured profile
+                    reg_min = int((SUPPLY_PROFILES.get(self._supply_profile_key) or {}).get("regulation_min_w", self._effective_regulation_min_power()))
+                    
                 _LOGGER.debug(
-                    "RegTick: net=%s target=%s currentA=%s status=%s enable=%s charge_power=%s soc=%s limit=%s active=%s missing=%s maxA=%s regMin=%s primary_profile=%s phase_mode=%s",
+                    "RegTick: net=%s target=%s currentA=%s status=%s enable=%s charge_power=%s soc=%s limit=%s active=%s missing=%s maxA=%s regMin=%s reg_profile=%s inc=%s dec=%s feedback=%s",
                     net, self._net_power_target_w, current_a_dbg, status,
                     self._is_charging_enabled(), charge_power, soc, self._soc_limit_percent,
                     self._charging_active, ",".join(missing) if missing else "-", conf_max_a,
-                    reg_min, self._supply_profile_key, self._phase_feedback_value
+                    reg_min, reg_profile_key, inc_export, dec_import, self._phase_feedback_value
+                )
+
+                # NIEUWE DEBUG LOG:
+                _LOGGER.debug(
+                    "RegTick ADJUST CHECK: net_ok=%s status_ok=%s (status=%s, expected=%s) current_entity=%s missing=%s soc_ok=%s charge_power=%s reg_min=%s power_ok=%s",
+                    net is not None,
+                    status == WALLBOX_STATUS_CHARGING,
+                    status,
+                    WALLBOX_STATUS_CHARGING,
+                    bool(self._current_setting_entity),
+                    missing,
+                    self._soc_allows_start(),
+                    charge_power,
+                    reg_min,
+                    charge_power is not None and charge_power >= reg_min if charge_power is not None else False
                 )
 
                 if net is not None:
@@ -3693,34 +3945,34 @@ class EVLoadController:
                             self._below_lower_since = None
                             self._cancel_below_lower_timer()
 
-                # Phase-switch aware regulation step thresholds:
-                thr = SUPPLY_PROFILE_REG_THRESHOLDS.get(self._effective_reg_profile_key()) or {}
-                inc_export = float(thr.get("export_inc_w", 250))
-                dec_import = float(thr.get("import_dec_w", 0))
-
-                if (
-                    net is not None
-                    and status == WALLBOX_STATUS_CHARGING
-                    and self._current_setting_entity
-                    and not missing
-                    and self._soc_allows_start()
-                ):
+                if net is not None and status == WALLBOX_STATUS_CHARGING and self._current_setting_entity and not missing and self._soc_allows_start():
                     now = time.monotonic()
-                    if charge_power is not None and charge_power >= reg_min and now >= (first_adjust_ready_at or 0):
+                    time_ok = now >= (first_adjust_ready_at or 0)
+                    
+                    if time_ok:
+                        # regMin check only for increasing (stable charging confirmation)
+                        # Decreasing is always allowed for safety (reduce load when importing)
+                        power_ok_for_increase = charge_power is not None and charge_power >= reg_min
+                        
                         deviation = net - self._net_power_target_w
                         export_w = deviation if deviation > 0 else 0.0
                         import_w = -deviation if deviation < 0 else 0.0
                         current_a = await self._get_current_setting_a()
+                        
                         if current_a is not None:
                             new_a = current_a
-                            if export_w >= inc_export and current_a < conf_max_a:
+                            
+                            # Increase: requires stable charging (regMin check)
+                            if export_w >= inc_export and current_a < conf_max_a and power_ok_for_increase:
                                 new_a = min(conf_max_a, current_a + 1)
+                            # Decrease: always allowed when importing (safety first)
                             elif import_w >= dec_import and current_a > MIN_CURRENT_A:
                                 new_a = max(MIN_CURRENT_A, current_a - 1)
+                            
                             if new_a != current_a:
                                 _LOGGER.debug(
-                                    "Adjust current: dev=%s export=%s import=%s inc_thr=%s dec_thr=%s %s→%sA",
-                                    deviation, export_w, import_w, inc_export, dec_import, current_a, new_a
+                                    "Adjust current: dev=%s export=%s import=%s inc_thr=%s dec_thr=%s power_ok_inc=%s %s→%sA",
+                                    deviation, export_w, import_w, inc_export, dec_import, power_ok_for_increase, current_a, new_a
                                 )
                                 await self._set_current_setting_a(new_a)
                                 
@@ -4306,11 +4558,18 @@ class EVLoadController:
         if self._ce_external_off_latched:
             if not self._ce_on_blocked_logged:
                 self._ce_on_blocked_logged = True
-                _LOGGER.warning(
-                    "EVCM %s: charging_enable ON blocked (external OFF latch active) entity=%s",
-                    self._log_name(), 
-                    self._charging_enable_entity
-                )
+                if self._is_wallbox_controlled_phase_switch():
+                    _LOGGER.debug(
+                        "EVCM %s: charging_enable ON blocked (external OFF latch active, wallbox-controlled mode) entity=%s",
+                        self._log_name(), 
+                        self._charging_enable_entity
+                    )
+                else:
+                    _LOGGER.warning(
+                        "EVCM %s: charging_enable ON blocked (external OFF latch active) entity=%s",
+                        self._log_name(), 
+                        self._charging_enable_entity
+                    )
             else:
                 _LOGGER.debug(
                     "EVCM %s: charging_enable ON blocked (external OFF latch active) reason=dedup entity=%s",
