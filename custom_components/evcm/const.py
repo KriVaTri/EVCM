@@ -231,7 +231,7 @@ PHASE_SWITCH_STOPPED_POWER_W_DEFAULT = 50
 # UI/status: if no valid feedback after this during a request -> Unknown + notify
 PHASE_SWITCH_REQUEST_FEEDBACK_TIMEOUT_S = 300
 
-# Phase switching UI mode select
+# Phase switching UI mode select (for select.py)
 PHASE_SWITCH_MODE_AUTO = "Auto"
 PHASE_SWITCH_MODE_FORCE_1P = "Force 1p"
 PHASE_SWITCH_MODE_FORCE_3P = "Force 3p"
@@ -254,6 +254,12 @@ CONF_AUTO_PHASE_SWITCH_DELAY_MIN = "auto_phase_switch_delay_min"
 AUTO_PHASE_SWITCH_DELAY_MIN_MIN = 15
 AUTO_PHASE_SWITCH_DELAY_MIN_MAX = 60
 DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN = 15
+
+# Phase switching control mode
+CONF_PHASE_SWITCH_CONTROL_MODE = "phase_switch_control_mode"
+PHASE_CONTROL_INTEGRATION = "integration"
+PHASE_CONTROL_WALLBOX = "wallbox"
+DEFAULT_PHASE_SWITCH_CONTROL_MODE = PHASE_CONTROL_INTEGRATION
 
 # Controller timing constants
 CONNECT_DEBOUNCE_SECONDS = 1
