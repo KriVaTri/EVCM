@@ -73,6 +73,11 @@ from .const import (
     AUTO_PHASE_SWITCH_DELAY_MIN_MIN,
     AUTO_PHASE_SWITCH_DELAY_MIN_MAX,
     DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
+    # Phase switching control mode
+    CONF_PHASE_SWITCH_CONTROL_MODE,
+    PHASE_CONTROL_INTEGRATION,
+    PHASE_CONTROL_WALLBOX,
+    DEFAULT_PHASE_SWITCH_CONTROL_MODE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,6 +166,8 @@ def _build_sensors_schema(
     selected_device: Optional[str] = None,
     filter_keys: Optional[set[str]] = None,
     supply_profile: str = "eu_1ph_230",
+    phase_switch_supported: bool = False,
+    phase_switch_control_mode: str = DEFAULT_PHASE_SWITCH_CONTROL_MODE,
 ) -> vol.Schema:
     if not isinstance(defaults, dict):
         defaults = {}
@@ -262,19 +269,44 @@ def _build_sensors_schema(
     fields[vol.Required(CONF_ECO_OFF_LOWER, default=defaults.get(CONF_ECO_OFF_LOWER, DEFAULT_ECO_OFF_LOWER))] = selector(num_sel_w)
 
     # ---- Phase switching (EUprofile-only v1) ----
-    if supply_profile == "eu_3ph_400":
-        if bool(defaults.get(CONF_PHASE_SWITCH_SUPPORTED, False)):
+    if supply_profile == "eu_3ph_400" and phase_switch_supported:
+        # Phase switch control mode selector
+        fields[
+            vol.Required(
+                CONF_PHASE_SWITCH_CONTROL_MODE,
+                default=defaults.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE),
+            )
+        ] = selector({
+            "select": {
+                "options": [
+                    {"value": PHASE_CONTROL_INTEGRATION, "label": "Integration controlled"},
+                    {"value": PHASE_CONTROL_WALLBOX, "label": "Wallbox controlled"},
+                ]
+            }
+        })
+
+        # Phase mode feedback sensor (required for both modes)
+        fields[
+            vol.Required(
+                CONF_PHASE_MODE_FEEDBACK_SENSOR,
+                default=defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR, ""),
+            )
+        ] = selector({"entity": {"domain": ["sensor", "input_select"]}})
+
+        # ALT thresholds (required for both modes since wallbox can switch to either)
+        fields[vol.Required(CONF_ECO_ON_UPPER_ALT, default=defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))] = selector(num_sel_w)
+        fields[vol.Required(CONF_ECO_ON_LOWER_ALT, default=defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))] = selector(num_sel_w)
+        fields[vol.Required(CONF_ECO_OFF_UPPER_ALT, default=defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))] = selector(num_sel_w)
+        fields[vol.Required(CONF_ECO_OFF_LOWER_ALT, default=defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))] = selector(num_sel_w)
+
+        # Auto phase switch delay - only for integration controlled mode
+        if phase_switch_control_mode == PHASE_CONTROL_INTEGRATION:
             fields[
                 vol.Required(
-                    CONF_PHASE_MODE_FEEDBACK_SENSOR,
-                    default=defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR, ""),
+                    CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
+                    default=defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
                 )
-            ] = selector({"entity": {"domain": ["sensor", "input_select"]}})
-
-            fields[vol.Required(CONF_ECO_ON_UPPER_ALT, default=defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))] = selector(num_sel_w)
-            fields[vol.Required(CONF_ECO_ON_LOWER_ALT, default=defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))] = selector(num_sel_w)
-            fields[vol.Required(CONF_ECO_OFF_UPPER_ALT, default=defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))] = selector(num_sel_w)
-            fields[vol.Required(CONF_ECO_OFF_LOWER_ALT, default=defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))] = selector(num_sel_w)
+            ] = selector(num_sel_auto_delay_min)
 
     fields[vol.Required(CONF_SCAN_INTERVAL, default=defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))] = selector(
         {
@@ -290,13 +322,20 @@ def _build_sensors_schema(
     fields[vol.Required(CONF_UPPER_DEBOUNCE_SECONDS, default=defaults.get(CONF_UPPER_DEBOUNCE_SECONDS, DEFAULT_UPPER_DEBOUNCE_SECONDS))] = selector(num_sel_upper_debounce)
     fields[vol.Required(CONF_SUSTAIN_SECONDS, default=defaults.get(CONF_SUSTAIN_SECONDS, DEFAULT_SUSTAIN_SECONDS))] = selector(num_sel_s)
 
-    # ---- Auto phase switching (v1) field ----
-    fields[
-        vol.Required(
-            CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
-            default=defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
+    # Auto phase switch delay at the end if not already added (for non-phase-switch configs)
+    if CONF_AUTO_PHASE_SWITCH_DELAY_MIN not in [k.schema for k in fields.keys() if hasattr(k, 'schema')]:
+        # Check if we already added it above
+        has_auto_delay = any(
+            getattr(k, 'schema', None) == CONF_AUTO_PHASE_SWITCH_DELAY_MIN 
+            for k in fields.keys()
         )
-    ] = selector(num_sel_auto_delay_min)
+        if not has_auto_delay:
+            fields[
+                vol.Required(
+                    CONF_AUTO_PHASE_SWITCH_DELAY_MIN,
+                    default=defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
+                )
+            ] = selector(num_sel_auto_delay_min)
 
     return vol.Schema(fields)
 
@@ -497,8 +536,10 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_ECO_ON_LOWER_ALT: DEFAULT_ECO_ON_LOWER_ALT,
             CONF_ECO_OFF_UPPER_ALT: DEFAULT_ECO_OFF_UPPER_ALT,
             CONF_ECO_OFF_LOWER_ALT: DEFAULT_ECO_OFF_LOWER_ALT,
-            # Auto phase switching defaults (ONLY ADDITION)
+            # Auto phase switching defaults
             CONF_AUTO_PHASE_SWITCH_DELAY_MIN: DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN,
+            # Phase switch control mode default
+            CONF_PHASE_SWITCH_CONTROL_MODE: DEFAULT_PHASE_SWITCH_CONTROL_MODE,
         }
         return await self.async_step_device()
 
@@ -542,12 +583,24 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._phase_switch_supported_selected is not None:
             self._s_defaults[CONF_PHASE_SWITCH_SUPPORTED] = bool(self._phase_switch_supported_selected)
 
+        phase_switch_supported = bool(self._s_defaults.get(CONF_PHASE_SWITCH_SUPPORTED, False))
+        phase_switch_control_mode = self._s_defaults.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE)
+
         if user_input is None and self._selected_device:
             _autofill_from_device(self.hass, self._s_defaults, self._selected_device)
 
         if user_input is None:
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._s_defaults, 
+                    self._selected_device, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -555,7 +608,16 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._s_defaults, 
+                    None, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
                 return self.async_show_form(
                     step_id="sensors",
                     data_schema=schema,
@@ -564,6 +626,9 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         for k, v in (user_input or {}).items():
             self._s_defaults[k] = v
+
+        # Update phase_switch_control_mode from user input
+        phase_switch_control_mode = self._s_defaults.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE)
 
         band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
         if band_min is None:
@@ -577,30 +642,28 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         errors = _validate_thresholds(thresh_data, band_min)
 
-        if profile_key == "eu_3ph_400":
-            ps = bool(self._s_defaults.get(CONF_PHASE_SWITCH_SUPPORTED, False))
-            if ps:
-                fb = (self._s_defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
-                if not fb:
-                    errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
+        if profile_key == "eu_3ph_400" and phase_switch_supported:
+            # Feedback sensor is required for both control modes
+            fb = (self._s_defaults.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
+            if not fb:
+                errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
 
-                alt_thresh_data = {
-                    CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
-                    CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
-                    CONF_ECO_OFF_UPPER: self._s_defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
-                    CONF_ECO_OFF_LOWER: self._s_defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
-                }
-                alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
-                mapping = {
-                    CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
-                    CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
-                    CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
-                    CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
-                }
-                for k, v in alt_errors.items():
-                    errors[mapping.get(k, k)] = v
-            else:
-                self._s_defaults.pop(CONF_PHASE_MODE_FEEDBACK_SENSOR, None)
+            # ALT thresholds are required for both control modes
+            alt_thresh_data = {
+                CONF_ECO_ON_UPPER: self._s_defaults.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
+                CONF_ECO_ON_LOWER: self._s_defaults.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
+                CONF_ECO_OFF_UPPER: self._s_defaults.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
+                CONF_ECO_OFF_LOWER: self._s_defaults.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
+            }
+            alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
+            mapping = {
+                CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
+                CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
+                CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
+                CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
+            }
+            for k, v in alt_errors.items():
+                errors[mapping.get(k, k)] = v
 
         try:
             si = int(self._s_defaults.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
@@ -630,19 +693,39 @@ class EVChargeManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception:
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
-        try:
-            ad = int(self._s_defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
-            if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
-                raise ValueError
-        except Exception:
-            errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
+        # Only validate auto delay if integration controlled
+        if phase_switch_control_mode == PHASE_CONTROL_INTEGRATION:
+            try:
+                ad = int(self._s_defaults.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
+                if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
+                    raise ValueError
+            except Exception:
+                errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
 
         if errors:
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._s_defaults, 
+                    self._selected_device, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._s_defaults, None, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._s_defaults, 
+                    None, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
             return self.async_show_form(
                 step_id="sensors",
                 data_schema=schema,
@@ -784,26 +867,51 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
                 CONF_ECO_OFF_UPPER_ALT: eff.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
                 CONF_ECO_OFF_LOWER_ALT: eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
                 CONF_AUTO_PHASE_SWITCH_DELAY_MIN: eff.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN),
+                CONF_PHASE_SWITCH_CONTROL_MODE: eff.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE),
             }
 
         if self._phase_switch_supported_selected is not None:
             self._values[CONF_PHASE_SWITCH_SUPPORTED] = bool(self._phase_switch_supported_selected)
 
+        phase_switch_supported = bool(self._values.get(CONF_PHASE_SWITCH_SUPPORTED, False))
+        phase_switch_control_mode = self._values.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE)
+
         if user_input is None:
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._values, 
+                    self._selected_device, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._values, 
+                    None, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
                 name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
                 return self.async_show_form(step_id="sensors", data_schema=schema, description_placeholders={"name": name})
 
         for k, v in (user_input or {}).items():
             self._values[k] = v
+
+        # Update phase_switch_control_mode from user input
+        phase_switch_control_mode = self._values.get(CONF_PHASE_SWITCH_CONTROL_MODE, DEFAULT_PHASE_SWITCH_CONTROL_MODE)
 
         band_min = SUPPLY_PROFILE_MIN_BAND.get(profile_key)
         if band_min is None:
@@ -817,30 +925,28 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         }
         errors = _validate_thresholds(thresh_data, band_min)
 
-        if profile_key == "eu_3ph_400":
-            ps = bool(self._values.get(CONF_PHASE_SWITCH_SUPPORTED, False))
-            if ps:
-                fb = (self._values.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
-                if not fb:
-                    errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
+        if profile_key == "eu_3ph_400" and phase_switch_supported:
+            # Feedback sensor is required for both control modes
+            fb = (self._values.get(CONF_PHASE_MODE_FEEDBACK_SENSOR) or "").strip()
+            if not fb:
+                errors[CONF_PHASE_MODE_FEEDBACK_SENSOR] = "required"
 
-                alt_thresh_data = {
-                    CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
-                    CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
-                    CONF_ECO_OFF_UPPER: self._values.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
-                    CONF_ECO_OFF_LOWER: self._values.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
-                }
-                alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
-                mapping = {
-                    CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
-                    CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
-                    CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
-                    CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
-                }
-                for k, v in alt_errors.items():
-                    errors[mapping.get(k, k)] = v
-            else:
-                self._values.pop(CONF_PHASE_MODE_FEEDBACK_SENSOR, None)
+            # ALT thresholds are required for both control modes
+            alt_thresh_data = {
+                CONF_ECO_ON_UPPER: self._values.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT),
+                CONF_ECO_ON_LOWER: self._values.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT),
+                CONF_ECO_OFF_UPPER: self._values.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT),
+                CONF_ECO_OFF_LOWER: self._values.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT),
+            }
+            alt_errors = _validate_thresholds(alt_thresh_data, MIN_BAND_230)
+            mapping = {
+                CONF_ECO_ON_UPPER: CONF_ECO_ON_UPPER_ALT,
+                CONF_ECO_ON_LOWER: CONF_ECO_ON_LOWER_ALT,
+                CONF_ECO_OFF_UPPER: CONF_ECO_OFF_UPPER_ALT,
+                CONF_ECO_OFF_LOWER: CONF_ECO_OFF_LOWER_ALT,
+            }
+            for k, v in alt_errors.items():
+                errors[mapping.get(k, k)] = v
 
         try:
             si = int(self._values.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
@@ -870,22 +976,41 @@ class EVChargeManagerOptionsFlow(OptionsFlowBase):
         except Exception:
             errors[CONF_MAX_CURRENT_LIMIT_A] = "value_out_of_range"
 
-        # Validate auto delay in options too (ONLY ADDITION)
-        try:
-            ad = int(self._values.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
-            if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
-                raise ValueError
-        except Exception:
-            errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
+        # Only validate auto delay if integration controlled
+        if phase_switch_control_mode == PHASE_CONTROL_INTEGRATION:
+            try:
+                ad = int(self._values.get(CONF_AUTO_PHASE_SWITCH_DELAY_MIN, DEFAULT_AUTO_PHASE_SWITCH_DELAY_MIN))
+                if ad < AUTO_PHASE_SWITCH_DELAY_MIN_MIN or ad > AUTO_PHASE_SWITCH_DELAY_MIN_MAX:
+                    raise ValueError
+            except Exception:
+                errors[CONF_AUTO_PHASE_SWITCH_DELAY_MIN] = "value_out_of_range"
 
         if errors:
             if self._selected_device:
                 _autofill_from_device(self.hass, self._values, self._selected_device)
             try:
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, self._selected_device, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._values, 
+                    self._selected_device, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
             except Exception as exc:
                 _LOGGER.warning("Device-filtered entity selector failed (%s); falling back to unfiltered.", exc)
-                schema = _build_sensors_schema(self.hass, grid_single, self._values, None, FILTERABLE_KEYS, supply_profile=profile_key)
+                schema = _build_sensors_schema(
+                    self.hass, 
+                    grid_single, 
+                    self._values, 
+                    None, 
+                    FILTERABLE_KEYS, 
+                    supply_profile=profile_key,
+                    phase_switch_supported=phase_switch_supported,
+                    phase_switch_control_mode=phase_switch_control_mode,
+                )
             name = eff.get(CONF_NAME) or self.config_entry.title or "EVCM"
             return self.async_show_form(step_id="sensors", data_schema=schema, errors=errors, description_placeholders={"name": name})
 
