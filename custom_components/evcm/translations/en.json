@@ -34,6 +34,7 @@
           "current_setting_entity": "Charging current setting number",
           "ev_battery_level_sensor": "EV SoC",
 
+          "phase_switch_control_mode": "Phase switching control",
           "phase_mode_feedback_sensor": "Phase mode feedback (sensor or input_select; value must be 1p/3p)",
 
           "eco_on_upper_w": "ECO ON upper (W)",
@@ -60,7 +61,8 @@
       "eco_off_band_small": "ECO OFF band too small",
       "must_exceed_off_upper": "ECO ON upper must exceed OFF upper",
       "must_exceed_off_lower": "ECO ON lower must exceed OFF lower",
-      "lower_above_upper": "Lower >= upper"
+      "lower_above_upper": "Lower >= upper",
+      "required": "This field is required"
     }
   },
   "options": {
@@ -96,6 +98,7 @@
           "current_setting_entity": "Charging current setting number",
           "ev_battery_level_sensor": "EV SoC",
 
+          "phase_switch_control_mode": "Phase switching control",
           "phase_mode_feedback_sensor": "Phase mode feedback",
 
           "eco_on_upper_w": "ECO ON upper (W)",
