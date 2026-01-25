@@ -87,9 +87,7 @@ During the config flow:
    - ECO ON (used when the ECO switch is ON)  
    - ECO OFF (used when the ECO switch is OFF)
 6. Set the sustain, debounce and scan interval timings
-7. Save—entities (switches & number inputs) appear
-
-Turn the `Start/Stop` switch ON to let it work.
+7. Submit
 
 ---
 
