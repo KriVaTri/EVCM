@@ -307,53 +307,161 @@ Max Peak avg:
 
 ## 9) Phase switching
 
-EVCM can control single-phase (1p) vs three-phase (3p) charging if your wallbox/setup supports phase switching.
+EVCM supports dynamic phase switching between 1-phase (1P) and 3-phase (3P) charging when your wallbox hardware supports this capability.
 
-### Modes
+### Configuration
 
-- **Auto**: EVCM may switch phases automatically based on grid conditions (see below).
-- **Force 3p**: Always request/assume 3-phase charging.
-- **Force 1p**: Always request/assume 1-phase charging.
+Phase switching is **optional** and configured during the integration setup/options flow:
 
-> Note: The actual phase change is performed by your own automation/listener reacting to the integration event: `PHASE_SWITCH_REQUEST_EVENT`.
+1. **Enable phase switching**: Choose whether you want to use this feature
+2. **Alternate (1P) thresholds**: If enabled, you must provide additional ECO ON/OFF upper thresholds specifically for 1-phase charging:
+   - ECO ON Upper Alt (1P)
+   - ECO OFF Upper Alt (1P)
+   
+   *Note: Lower thresholds remain shared between 1P and 3P profiles*
 
-### Auto phase switching (event-driven)
+3. **Phase feedback sensor** (required): A sensor that reports the current active phase configuration of your wallbox
+   - Expected values: `1` (single-phase) or `3` (three-phase)
+   - This sensor is mandatory when phase switching is enabled
 
-Auto phase switching is **event-driven**: it is evaluated only when relevant sensor updates/events occur (e.g. grid/net power, charge power/status, phase feedback).
-This means the configured delay is a **minimum**; the switch will happen on the **first evaluation after the delay has elapsed**.
+4. **Control mode**: Choose how phase switching is controlled:
+   - **Integration-controlled**: EVCM manages phase switching decisions and requests
+   - **Wallbox-controlled**: Your wallbox handles phase switching autonomously
 
-Auto switching is only considered when charging is allowed (same “may I charge?” gating as the controller):
-Start/Stop enabled, cable connected, planner window allowed, SoC allowed, priority allowed, and essential data available.
-If any of these become false, pending auto-switch candidates are cleared.
+---
 
-#### 3p → 1p (stopped-based)
+### Wallbox-controlled mode
 
-EVCM considers switching from 3p to 1p only when:
-- charging was previously stopped due to `below_lower` (latched stop reason),
-- charging is currently OFF,
-- grid/net power is in the **switch window**:
+In this mode, the wallbox itself decides when to switch phases. EVCM adapts its behavior based on the current phase reported by the feedback sensor.
 
-  `upper_alt ≤ net < current_upper`
+**Behavior:**
+- EVCM continuously monitors the **phase feedback sensor**
+- The integration uses the feedback value to select the appropriate power profile (1P or 3P) internally
+- Power calculations, minimum thresholds, and current regulation adapt automatically to the active phase
+- **Fallback**: If the feedback sensor reports `unknown` or `unavailable`, EVCM defaults to the **3P profile** (most conservative approach to prevent overloading)
 
-Where:
-- `upper_alt` = configured ALT upper threshold (Eco On/Off Upper Alt),
-- `current_upper` = the currently effective upper threshold used for resuming (may include Max Peak Avg override).
+**User responsibility:**
+- Ensure your wallbox's internal phase switching logic is properly configured
+- Verify the phase feedback sensor accurately reflects the wallbox's current state
 
-The condition must remain continuously true for the configured delay (timer resets when it becomes false).
-If `net ≥ current_upper`, resuming in the current phase has priority and no phase switch is requested.
+---
 
-#### 1p → 3p
+### Integration-controlled mode
 
-EVCM considers switching from 1p to 3p only when:
-- currently in 1p,
-- current is at maximum,
-- available headroom is sufficient: `(net + charge_power) ≥ (3p_upper + margin)`,
-- delay has elapsed.
+In this mode, EVCM actively controls when phase switching should occur, but **you must implement the physical switching** via automation.
 
-### Sensor update frequency
+#### Phase switch requests (events)
 
-Because Auto switching is event-driven, a stalled or very slow-updating grid/net sensor can delay (or prevent) automatic phase switching.
-Use a grid/net sensor with a reasonable update frequency (multiple updates per minute recommended).
+EVCM communicates phase switch requests via the Home Assistant event bus:
+
+**Event**: `PHASE_SWITCH_REQUEST_EVENT`  
+**Data payload**: `{"phase": "1p"}` or `{"phase": "3p"}`
+
+**Your automation must:**
+1. Listen for this event as a trigger
+2. Execute the necessary commands to switch your wallbox between 1P and 3P modes
+3. Ensure the phase feedback sensor updates to reflect the new state
+
+**Example automation trigger:**
+```yaml
+trigger:
+  - platform: event
+    event_type: PHASE_SWITCH_REQUEST_EVENT
+    event_data:
+      phase: "1p"
+action:
+  - service: [your_wallbox.switch_to_single_phase]
+    # ... your specific wallbox commands
+```
+
+#### Mode selector
+
+When integration-controlled mode is active, EVCM provides a **phase mode selector** per entry with three options:
+
+1. **Auto**: EVCM automatically determines when to switch phases based on grid conditions (see switching logic below)
+2. **Force 3P**: Lock to 3-phase mode; no automatic switching occurs
+3. **Force 1P**: Lock to 1-phase mode; no automatic switching occurs
+
+*Note: Force modes override automatic phase switching decisions. The integration will still send events if you manually change the selector.*
+
+#### Automatic phase switching logic (Auto mode)
+
+When the selector is set to **Auto**, EVCM evaluates switching opportunities based on grid conditions:
+
+##### Switching from 3P → 1P
+
+**Conditions:**
+- Current profile is 3P
+- Charging is currently **stopped** (not actively charging)
+- Net power is **between** the 1P upper threshold (Alt) and the 3P upper threshold:
+  
+  `upper_alt_1p ≤ net_power < upper_3p`
+
+- This condition must remain stable for **at least** the configured minimum delay (default: 15 minutes, user-configurable)
+
+**Reasoning**: There is sufficient surplus to start charging in 1P mode, but not enough to start in 3P mode.
+
+##### Switching from 1P → 3P
+
+**Conditions:**
+- Current profile is 1P
+- Charging is **active**
+- Current is at the configured **maximum** (wallbox is charging at full 1P capacity)
+- Net power + charge power exceeds the 3P upper threshold with margin:
+  
+  `(net_power + charge_power) ≥ (upper_3p + safety_margin)`
+
+- This condition must remain stable for **at least** the configured minimum delay
+
+**Reasoning**: There is significantly more surplus available; switching to 3P would utilize the excess solar/export power more efficiently.
+
+#### Timing constraints
+
+- Minimum delay: **15 minutes** (configurable during setup/options)
+- The delay is enforced to prevent rapid switching (wear on contactors, grid instability)
+- The timer **resets** if conditions no longer match before the delay elapses
+
+#### Feedback handling and fallback
+
+- EVCM continuously monitors the **phase feedback sensor** to confirm the active phase
+- **Mismatch detection**: If the feedback does not match the last requested phase, EVCM assumes the switch failed or is pending
+  - The integration will **fall back to the 3P profile** (primary/conservative profile) until feedback aligns
+- **Unknown/unavailable feedback**: Always triggers fallback to **3P profile**
+
+*This ensures safe operation even when communication with the wallbox is unreliable.*
+
+---
+
+### Important notes
+
+#### For integration-controlled users:
+
+⚠️ **Disable wallbox-internal phase switching logic** to avoid conflicts between EVCM and your wallbox's autonomous decisions. Only one controller should manage phase switching at a time.
+
+⚠️ **You are responsible for implementing the automation** that listens to `PHASE_SWITCH_REQUEST_EVENT` and executes the actual phase switch on your hardware.
+
+#### Primary profile
+
+When phase switching is enabled, the **3P profile is always the primary profile**:
+- It is the most conservative (higher minimum power requirement reduces risk of frequent start/stop cycles)
+- Used as the fallback in case of unknown feedback or mismatch
+- Initial state on integration load defaults to 3P unless feedback indicates otherwise
+
+---
+
+### Summary table
+
+| Aspect | Wallbox-controlled | Integration-controlled |
+|--------|-------------------|----------------------|
+| **Who decides when to switch** | Wallbox internal logic | EVCM (via Auto/Force modes) |
+| **Event emission** | No | Yes (`PHASE_SWITCH_REQUEST_EVENT`) |
+| **User automation required** | No | Yes (to execute physical switching) |
+| **Feedback sensor** | Required (for profile selection) | Required (for confirmation & fallback) |
+| **Mode selector** | Not available | Available (Auto / Force 3P / Force 1P) |
+| **Fallback on unknown feedback** | 3P profile | 3P profile |
+| **Configuration complexity** | Lower | Higher (requires automation setup) |
+
+---
 
 ---
 
