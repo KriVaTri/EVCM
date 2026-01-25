@@ -445,7 +445,7 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
  | --------------|----------|----------|-------|
  | IMMEDIATE     |  -7000W  |  -4000W  | 3000W |
  | NORMAL        |  -7000W  |  -3000W  | 4000W |
- | CONSERVATIVE  |  -7000W  |  -2000W  | 5000W |
+ | LATE          |  -7000W  |  -2000W  | 5000W |
 
 ---
 
