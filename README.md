@@ -86,7 +86,7 @@ During the config flow:
 5. Enter the threshold bands:  
    - ECO ON (used when the ECO switch is ON)  
    - ECO OFF (used when the ECO switch is OFF)
-6. Set an SoC limit or a planner time window (optional)
+6. Set the sustain, debounce and scan interval timings
 7. Save—entities (switches & number inputs) appear
 
 Turn the `Start/Stop` switch ON to let it work.
