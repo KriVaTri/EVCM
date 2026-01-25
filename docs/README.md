@@ -340,7 +340,7 @@ In this mode, the wallbox itself decides when to switch phases. EVCM adapts its 
 - EVCM continuously monitors the **phase feedback sensor**
 - The integration uses the feedback value to select the appropriate power profile (1P or 3P) internally
 - Power calculations, minimum thresholds, and current regulation adapt automatically to the active phase
-- **Fallback**: If the feedback sensor reports `unknown` or `unavailable`, EVCM defaults to the **3P profile** (most conservative approach to prevent overloading)
+- **Fallback**: If the feedback sensor reports `unknown` or `unavailable`, EVCM defaults to the **3P profile** (most conservative approach to prevent start/stop flapping)
 
 **User responsibility:**
 - Ensure your wallbox's internal phase switching logic is properly configured
