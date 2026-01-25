@@ -434,6 +434,21 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
 
 ---
 
+### Example threshold settings for optimal use of phase switching 3p -> 1p
+
+- When 3p charging stops because of below lower threshold @ 6A => import gain will be minimum 4000W (= default **delta**)
+- The **delta** between 3p Lower and 1p Upper determines how quickly switching can happen (smaller delta = earlier switch, larger delta = later switch)
+- The 3p upper threshold must be set to a higher value (less negative) than the 1p upper threshold to avoid 3p from resuming the charge session before phase switching can happen
+- Recommended threshold settings for different switch timings:
+  
+ | Switch timing | 3p Lower | 1p Upper | Delta |
+ | --------------|----------|----------|-------|
+ | IMMEDIATE     |  -7000W  |  -4000W  | 3000W |
+ | NORMAL        |  -7000W  |  -3000W  | 4000W |
+ | CONSERVATIVE  |  -7000W  |  -2000W  | 5000W |
+
+---
+
 ### Important notes
 
 #### For integration-controlled users:
