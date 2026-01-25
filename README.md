@@ -83,7 +83,7 @@ During the config flow:
 2. Choose 1‑phase or 3‑phase (affects minimum power math)
 3. Select your wallbox (optional) and phase switching support (optional)
 4. Map the charger and grid sensors
-5. Enter two threshold bands:  
+5. Enter the threshold bands:  
    - ECO ON (used when the ECO switch is ON)  
    - ECO OFF (used when the ECO switch is OFF)
 6. Set an SoC limit or a planner time window (optional)
