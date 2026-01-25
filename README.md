@@ -39,6 +39,7 @@ From your charger integration (e.g. Wallbox) you need:
 - Charging enable (switch)
 - Lock (lock entity)
 - Current setting (number entity to set amps)
+- A phase feedback sensor (only required when using the phase switching feature)
 
 From your energy setup:
 - Either a single “net power” sensor (positive = export, negative = import)  
