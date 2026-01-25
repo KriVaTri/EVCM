@@ -323,7 +323,7 @@ Phase switching is **optional** and configured during the integration setup/opti
    *Note: Lower thresholds remain shared between 1P and 3P profiles*
 
 3. **Phase feedback sensor** (required): A sensor that reports the current active phase configuration of your wallbox
-   - Expected values: `1` (single-phase) or `3` (three-phase)
+   - Expected values: `1p` (single-phase) or `3p` (three-phase)
    - This sensor is mandatory when phase switching is enabled
 
 4. **Control mode**: Choose how phase switching is controlled:
