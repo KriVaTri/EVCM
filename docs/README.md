@@ -638,7 +638,7 @@ The external OFF latch is cleared when:
 
 EVCM also recreates the relevant notification(s) after a Home Assistant restart/reload if needed, so the user always understands why charging is blocked.
 
-* NOTE: external OFF detection notifications will be suppressed in wallbox-controlled phase switching mode *
+*NOTE: external OFF detection notifications will be suppressed in wallbox-controlled phase switching mode to avoid false notification when switching*
 
 ---
 
