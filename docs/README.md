@@ -238,8 +238,8 @@ Notes:
 - Priority Charging is a global flag; each entry exposes a proxy switch that reads/writes the same global value and stays in sync via events.
 - Auto unlock controls if EVCM is allowed to automatically unlock the wallbox lock to start charging:
   - ON: default behaviour (unchanged from previous versions). When all start conditions are met (thresholds/planner/SoC/priority/data), EVCM may unlock and start charging. Automatic re‑lock after charging start remains active.
-  - OFF: EVCM will not unlock automatically. The user must manually unlock before charging can start. All other logic (including automatic re‑lock on cable removal etc.) remains unchanged.
-- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Reset state[...]
+  - OFF: EVCM will not unlock automatically. The user must manually unlock before charging can start. All other logic remains unchanged.
+- Start/Stop Reset controls whether Start/Stop should be reset to ON or OFF after cable disconnect and on integration reload (persisted). In those moments the Start/Stop switch mirrors the Start/Stop Reset state.
 
 ---
 
