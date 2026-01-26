@@ -53,7 +53,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - ECO OFF thresholds: “upper” and “lower” thresholds are typically set for use with low grid export (winter).
 - Max Peak avg: this setting overrides the ECO threshold when it is stricter than the currently active lower threshold.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
-- Manual mode: manual override; no dynamic hysteresis regulation, but planner/SoC/priority still gate starting.
+- Manual mode: manual override; no dynamic hysteresis regulation, but planner/SoC/priority still gate starting and stopping.
 - Priority Charging: when ON, only the “current priority” entry is allowed to regulate.
 - Order: global order of entries; used to pick the next/first candidate in priority mode.
 - Preferred: internal pointer to the top-of-order entry; avoids race conditions on reconnect.
