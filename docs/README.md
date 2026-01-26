@@ -90,10 +90,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 
 - Use HACS: search for "EVCM", download and restart Home Assistant.
 
-- Or Copy the folder `custom_components/evcm/` into your Home Assistant configuration directory.
-Ensure `manifest.json` contains `"domain": "evcm"`.
-Restart Home Assistant.
-Add the integration via Settings → Devices & Services → “EVCM”.
+- Or Copy the folder `custom_components/evcm/` into your Home Assistant configuration directory. Restart Home Assistant. Add the integration via Settings → Devices & Services → “EVCM”.
 
 ---
 
