@@ -508,7 +508,7 @@ Regulation logic:
 
 Number entity: “{Entry Name} SoC limit” (0–100 %, integer, unit “%”).
 
-- When an SoC sensor is configured and the SoC is ≥ limit, charging is paused and (if Priority Charging is ON and this entry is current) EVCM advances to the next by order.
+- When an SoC sensor is configured and the EV SoC is ≥ SoC limit, charging is paused and (if Priority Charging is ON and this entry is current) EVCM advances to the next by order.
 - If there is no SoC sensor or the limit is unset, SoC gating is effectively disabled.
 
 ### Temporarily disabling SoC gating
