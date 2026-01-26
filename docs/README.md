@@ -554,13 +554,13 @@ The timers are canceled/reset when conditions no longer apply.
 
 ## 14) Manual vs Start/Stop modes
 
-| Aspect                | Start/Stop (ON)              | Manual (ON)           |
-|-----------------------|------------------------------|-----------------------|
-| Threshold gating      | Yes                          | No                    |
-| Regulation loop       | Yes                          | No                    |
-| Sustain timers        | Yes                          | No                    |
-| Auto-start            | Yes (when conditions allow)  | One-shot checks only  |
-| Priority gating       | Yes                          | Yes                   |
+| Aspect                | Start/Stop (ON)  | Manual (ON)  |
+|-----------------------|------------------|--------------|
+| Threshold gating      | Yes              | No           |
+| Regulation loop       | Yes              | No           |
+| Sustain timers        | Yes              | No           |
+| Auto-start            | Yes              | NO           |
+| Priority gating       | Yes              | Yes          |
 
 Manual is intended for “force charging” scenarios but still respects planner/SoC for starting and priority gating for allowance.
 
