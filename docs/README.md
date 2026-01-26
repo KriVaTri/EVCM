@@ -318,8 +318,6 @@ Phase switching is **optional** and can be configured during the integration set
    - ECO ON Lower Alt (1P)
    - ECO OFF Upper Alt (1P)
    - ECO OFF Lower Alt (1P)
-   
-   *Note: Lower thresholds remain shared between 1P and 3P profiles*
 
 3. **Phase feedback sensor** (required): A sensor that reports the current active phase configuration of your wallbox
    - Expected values: `1p` (single-phase) or `3p` (three-phase)
