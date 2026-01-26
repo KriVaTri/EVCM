@@ -49,8 +49,8 @@ This document explains how EVCM works, how to configure it, and which entities i
 ## 1) Concepts and terminology
 
 - Net power: grid export minus import (positive = exporting, negative = importing). In “single sensor” mode a single sensor may report positive and negative values; otherwise separate export/import sensors may report only positive values.
-- ECO ON thresholds: “upper” and “lower” thresholds used when ECO mode is ON.
-- ECO OFF thresholds: an alternate band used when ECO mode is OFF.
+- ECO ON thresholds: “upper” and “lower” thresholds are typically set for use with high grid export (summer).
+- ECO OFF thresholds: “upper” and “lower” thresholds are typically set for use with low grid export (winter).
 - Max Peak avg: this setting overrides the ECO threshold when it is stricter than the currently active lower threshold.
 - Start/Stop mode: main automation controlling auto start/pause based on thresholds, planner window, SoC and priority.
 - Manual mode: manual override; no dynamic hysteresis regulation, but planner/SoC/priority still gate starting.
