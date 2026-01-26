@@ -440,7 +440,7 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
   
  | Switch timing | 3p Lower | 1p Upper | Delta |
  | --------------|----------|----------|-------|
- | IMMEDIATE     |  -7000W  |  -4000W  | 3000W |
+ | EARLY         |  -7000W  |  -4000W  | 3000W |
  | NORMAL        |  -7000W  |  -3000W  | 4000W |
  | LATE          |  -7000W  |  -2000W  | 5000W |
 
