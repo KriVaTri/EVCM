@@ -695,7 +695,6 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
-| After reorder, the old current stays active | Alignment/preferred not updated | Ensure you’re on a version that updates preferred to top and aligns to first eligible on order change |
 | No UI refresh after order change | Missing event fire | EVCM fires `evcm_priority_refresh` after each order update; ensure automations do not bypass order helpers |
 | Charging never starts | Below upper threshold / invalid planner / missing data / priority gating | Check thresholds, planner window, sensor availability, and Priority Charging state |
 | SoC limit ignored | No SoC sensor configured or limit unset | Configure EV SoC sensor and set a limit |
