@@ -35,7 +35,7 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [11. SoC limit](#11-soc-limit)  
 - [12. Planner window (start/stop datetimes)](#12-planner-window-startstop-datetimes)  
 - [13. Sustain timers (below-lower / no-data)](#13-sustain-timers-below-lower--no-data)  
-- [14. Manual vs Start/Stop modes](#14-manual-vs-startstop-modes)  
+- [14. Manual vs Auto modes](#14-manual-vs-auto-modes)  
 - [15. Events and bus signals](#15-events-and-bus-signals)  
 - [16. Entities overview](#16-entities-overview)  
 - [17. Unknown/unavailable detection](#17-unknownunavailable-detection)
