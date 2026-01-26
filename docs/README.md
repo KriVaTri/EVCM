@@ -103,9 +103,10 @@ The configuration flow has three steps:
    - Grid mode (single net power sensor vs. separate export/import)
    - Wallbox phases (1 vs 3)
 
-2. Device (optional)
+2. Device and phase switching support (optional)
    - Select a wallbox device to pre-populate the entities in the next step (optional)
    - When a wallbox device was selected, please check the pre-populated entities in step 3 and adjust if needed
+   - When phase switching is selected, additional settings must be set in step 3
 
 3. Sensors and thresholds
    - Net power sensor:
