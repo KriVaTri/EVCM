@@ -495,7 +495,7 @@ Runs every `scan_interval` seconds when all of these are true:
 - Essential data is available (net power, and when configured, wallbox status and charge power)
 
 Regulation logic:
-- Evaluate net power and charge power
+- Evaluate net power and charge power per scan interval
 - If charging and charge power ≥ minimum threshold:
   - Increase current by +1A when export exceeds a phase-dependent threshold
   - Decrease current by −1A when import exceeds a phase-dependent threshold
