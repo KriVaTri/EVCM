@@ -676,7 +676,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 Use Case Example with ECO mode ON:
 
 When the upper threshold is set to 4000W, charging will start when grid export is 4000W or above.
-If the power supply profile is set to 3-phase 400V (minimum charging power = 4150W), grid export will decrease by approximately 4150W (when charging @ 6A), resulting in 150W of grid consumption.
+If the power supply profile is set to 3-phase 400V (minimum charging power ≈ 4000W), grid export will decrease by approximately 4150W (when charging @ 6A), resulting in 150W of grid consumption.
 The regulation loop will then wait for the conditions to either increase or decrease the charging current:
 For 3-phase 400V, the charging power must rise by +700W above the net target to increase by 1A, or drop by -200W below the net target to decrease by 1A.
 These conditions will be checked at every scan interval.
