@@ -189,23 +189,23 @@ EVCM now offers selectable supply/voltage profiles and an optional Net Power Tar
 Supply profiles (select during setup/options):
 - 1‑phase 230V/240V (`eu_1ph_230`/`na_1ph_240`)
   - Phases: 1, phase voltage ≈ 230 V
-  - Min power at 6 A ≈ 1.41 kW
+  - Min power at 6 A ≈ 1.4 kW
   - Regulation thresholds: export_inc=240 W, import_dec=70 W
 - 3‑phase 400V (`eu_3ph_400`)
   - Phases: 3, phase voltage ≈ 230 V (400 V line-to-line)
-  - Min power at 6 A ≈ 4.14 kW
+  - Min power at 6 A ≈ 4 kW
   - Regulation thresholds: export_inc=700 W, import_dec=200 W
 - 3‑phase 208V (`na_3ph_208`)
   - Phases: 3, phase voltage ≈ 120 V (208 V line-to-line)
-  - Min power at 6 A ≈ 2.16 kW
+  - Min power at 6 A ≈ 2.15 kW
   - Regulation thresholds: export_inc=370 W, import_dec=105 W
 - 1‑phase 200V (`jp_1ph_200`)
   - Phases: 1, phase voltage ≈ 200 V
-  - Min power at 6 A ≈ 1.20 kW
+  - Min power at 6 A ≈ 1.2 kW
   - Regulation thresholds: export_inc=205 W, import_dec=60 W
 - 1‑phase 120V (Level 1) (`na_1ph_120`)
   - Phases: 1, phase voltage ≈ 120 V
-  - Min power at 6 A ≈ 0.72 kW
+  - Min power at 6 A ≈ 0.7 kW
   - Regulation thresholds: export_inc=122 W, import_dec=35 W
 
 Net Power Target (fine regulation center):
