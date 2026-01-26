@@ -309,8 +309,8 @@ EVCM supports dynamic phase switching between 1-phase (1P) and 3-phase (3P) char
 
 ### Configuration
 
-Phase switching is **optional** and can be configured during the integration setup/options flow:
-(Only available when 3p 400V is the primary profile)
+Phase switching is **optional** and can be configured during the integration setup/options flow.
+(Only available when 3p 400V is the primary profile):
 
 1. **Enable phase switching**: Choose whether you want to use this feature
 2. **Alternate (1P) thresholds**: If enabled, you must provide additional ECO ON/OFF upper and lower thresholds specifically for 1-phase charging:
