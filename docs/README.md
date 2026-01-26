@@ -24,25 +24,25 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [2. Key features](#2-key-features)  
 - [3. Installation](#3-installation)  
 - [4. Configuration flow](#4-configuration-flow)  
-- [Compatibility and required entities](#compatibility-and-required-entities)
-- [Supply Profiles and Net Power Target](#supply-profiles-and-net-power-target)
-- [5. Mode switches (per entry)](#5-mode-switches-per-entry)  
-- [6. Priority charging behavior](#6-priority-charging-behavior)  
-- [7. Priority order numbering](#7-priority-order-numbering)  
-- [8. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-on-vs-eco-off-and-max-peak-avg)
-- [9. Phase switching](#9-phase-switching)  
-- [10. Automatic regulation (regulation loop)](#10-automatic-regulation-regulation-loop)  
-- [11. SoC limit](#11-soc-limit)  
-- [12. Planner window (start/stop datetimes)](#12-planner-window-startstop-datetimes)  
-- [13. Sustain timers (below-lower / no-data)](#13-sustain-timers-below-lower--no-data)  
-- [14. Manual vs Auto modes](#14-manual-vs-auto-modes)  
-- [15. Events and bus signals](#15-events-and-bus-signals)  
-- [16. Entities overview](#16-entities-overview)  
-- [17. Unknown/unavailable detection](#17-unknownunavailable-detection)
-- [18. Safety: external charging_enable OFF detection](#18-safety-external-charging_enable-OFF-detection) 
-- [19. Common scenarios](#19-common-scenarios)  
-- [20. Use Case Example](#20-use-case-example)
-- [21. Troubleshooting](#21-troubleshooting)
+- [5. Compatibility and required entities](#compatibility-and-required-entities)
+- [6. Supply Profiles and Net Power Target](#supply-profiles-and-net-power-target)
+- [7. Mode switches (per entry)](#5-mode-switches-per-entry)  
+- [8. Priority charging behavior](#6-priority-charging-behavior)  
+- [9. Priority order numbering](#7-priority-order-numbering)  
+- [10. Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg](#8-hysteresis-thresholds-eco-on-vs-eco-off-and-max-peak-avg)
+- [11. Phase switching](#9-phase-switching)  
+- [12. Automatic regulation (regulation loop)](#10-automatic-regulation-regulation-loop)  
+- [13. SoC limit](#11-soc-limit)  
+- [14. Planner window (start/stop datetimes)](#12-planner-window-startstop-datetimes)  
+- [15. Sustain timers (below-lower / no-data)](#13-sustain-timers-below-lower--no-data)  
+- [16. Manual vs Auto modes](#14-manual-vs-auto-modes)  
+- [17. Events and bus signals](#15-events-and-bus-signals)  
+- [18. Entities overview](#16-entities-overview)  
+- [19. Unknown/unavailable detection](#17-unknownunavailable-detection)
+- [20. Safety: external charging_enable OFF detection](#18-safety-external-charging_enable-OFF-detection) 
+- [21. Common scenarios](#19-common-scenarios)  
+- [22. Use Case Example](#20-use-case-example)
+- [23. Troubleshooting](#21-troubleshooting)
 
 ---
 
@@ -138,7 +138,7 @@ All numeric inputs use integer steps and input boxes.
 
 ---
 
-## Compatibility and required entities
+## 5) Compatibility and required entities
 
 Originally designed for Wallbox chargers (e.g. Copper SB and the Pulsar series), EVCM can also work with other EV chargers as long as the following entities are available:
 
@@ -182,7 +182,7 @@ If your charger integration has 5s end‑to‑end delay (command → effect/stat
 
 ---
 
-## Supply Profiles and Net Power Target
+## 6) Supply Profiles and Net Power Target
 
 EVCM now offers selectable supply/voltage profiles and an optional Net Power Target for finer current regulation.
 
@@ -222,7 +222,7 @@ Net Power Target (fine regulation center):
 
 ---
 
-## 5) Mode switches (per entry)
+## 7) Mode switches (per entry)
 
 EVCM creates a set of switches per configured entry:
 
@@ -243,7 +243,7 @@ Notes:
 
 ---
 
-## 6) Priority charging behavior
+## 8) Priority charging behavior
 
 When Priority Charging is ON:
 - Only the “current priority” entry is allowed to regulate and auto-start.
@@ -264,7 +264,7 @@ Design guarantee:
 
 ---
 
-## 7) Priority order numbering
+## 9) Priority order numbering
 
 For each entry EVCM provides a Number entity:
 - Name: “{Entry Name} priority order”
@@ -277,7 +277,7 @@ Uniqueness is guaranteed by treating the order array as the single source of tru
 
 ---
 
-## 8) Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg
+## 10) Hysteresis thresholds (ECO ON vs ECO OFF) and Max Peak avg
 
 Two bands are defined:
 - ECO ON band (used when ECO = ON): ECO ON upper and ECO ON lower (Delta depending on supply voltage / phase profile)
@@ -303,7 +303,7 @@ Max Peak avg:
 
 ---
 
-## 9) Phase switching
+## 11) Phase switching
 
 EVCM supports dynamic phase switching between 1-phase (1P) and 3-phase (3P) charging when your wallbox hardware supports this capability.
 
@@ -481,7 +481,7 @@ When phase switching is enabled, the **3P profile is always the primary profile*
 
 ---
 
-## 10) Automatic regulation (regulation loop)
+## 12) Automatic regulation (regulation loop)
 
 Runs every `scan_interval` seconds when all of these are true:
 - Start/Stop = ON
@@ -503,7 +503,7 @@ Regulation logic:
 
 ---
 
-## 11) SoC limit
+## 13) SoC limit
 
 Number entity: “{Entry Name} SoC limit” (0–100 %, integer, unit “%”).
 
@@ -522,7 +522,7 @@ You have two simple ways to effectively disable SoC-based pausing without changi
 
 ---
 
-## 12) Planner window (start/stop datetimes)
+## 14) Planner window (start/stop datetimes)
 
 DateTime entities:
 - “{Entry Name} planner start”
@@ -541,7 +541,7 @@ Date rollover:
 
 ---
 
-## 13) Sustain timers (below-lower / no-data)
+## 15) Sustain timers (below-lower / no-data)
 
 If `sustain time` > 0:
 - Below-lower: if net < lower continuously for ≥ sustain time → pause
@@ -552,7 +552,7 @@ The timers are canceled/reset when conditions no longer apply.
 
 ---
 
-## 14) Manual vs Auto modes
+## 16) Manual vs Auto modes
 
 | Aspect            | Auto (Manual OFF) | Manual (Manual ON) |
 |-------------------|-------------------|--------------------|
@@ -566,7 +566,7 @@ Manual is intended for “force charging” scenarios but still respects planner
 
 ---
 
-## 15) Events and bus signals
+## 17) Events and bus signals
 
 - `evcm_priority_refresh`: fired on any global priority/order/mode change and on each order update. UI and entities (numbers/switches) listen to this to refresh immediately.
 - `evcm_unknown_state`: emitted when unknown/unavailable sensor states are encountered (with debouncing and startup grace).
@@ -576,7 +576,7 @@ You can observe these in Developer Tools → Events.
 
 ---
 
-## 16) Entities overview
+## 18) Entities overview
 
 Per entry:
 
@@ -608,7 +608,7 @@ You will also configure references to:
 
 ---
 
-## 17) Unknown/unavailable detection
+## 19) Unknown/unavailable detection
 
 The controller reports unknown/unavailable transitions per sensor with:
 - A startup grace period to reduce noise
@@ -619,7 +619,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 18) Safety: external `charging_enable` OFF detection
+## 20) Safety: external `charging_enable` OFF detection
 
 EVCM detects when the configured `charging_enable` switch is turned **OFF externally** (by the wallbox itself, the vendor app, another integration, or an automation) while the EV cable is connected.
 (If you have an automation that toggles the same `charging_enable` entity, consider using the EVCM **Start/Stop** switch instead).
@@ -640,7 +640,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 19) Common scenarios
+## 21) Common scenarios
 
 1. Two wallboxes, Priority OFF  
    Both may regulate independently (no priority gating).
@@ -670,7 +670,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 20) Use Case Example
+## 22) Use Case Example
 
 Use Case Example with ECO mode ON:
 
@@ -689,7 +689,7 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 
 ---
 
-## 21) Troubleshooting
+## 23) Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
