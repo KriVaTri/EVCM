@@ -490,7 +490,7 @@ Runs every `scan_interval` seconds when all of these are true:
 - Cable connected
 - Charging enable is ON
 - Planner window allows start
-- SoC is below limit (or limit is not set)
+- SoC is below limit (only when a EV SoC sensor was configured)
 - If Priority Charging is ON: this entry is the current priority
 - Essential data is available (net power, and when configured, wallbox status and charge power)
 
