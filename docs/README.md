@@ -444,6 +444,8 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
  | NORMAL        |  -7000W  |  -3000W  | 4000W |
  | LATE          |  -7000W  |  -2000W  | 5000W |
 
+- When adjusting the 3p lower threshold, 1p upper must be adapted accordingly to keep the delta as preferred.
+  
 ---
 
 ### Important notes
