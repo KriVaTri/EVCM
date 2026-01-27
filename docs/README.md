@@ -301,7 +301,7 @@ Upper/lower values and minimum band sizes are validated in the config flow (phas
 - When set it overrides the ECO thresholds, but only applies when it is stricter than the currently active lower threshold; otherwise it has no effect.
 - Threshold delta will be set to the default for the used power profile. (when charging with 3p 400V the delta is 4500W)
 - This threshold can be used as the only threshold when setting the ECO lower thresholds to a lower value.
-- The minimum value that can be used is 100W resulting a maximum upper threshold of 4400W when 3p 400V charging. (charging will start @ 4400W grid export)
+- The minimum value that can be used is 100W resulting a maximum upper threshold of 4400W when 3p 400V charging. (charging will start from 4400W or more grid export)
 - To disable set the value to 0.
 
 ---
