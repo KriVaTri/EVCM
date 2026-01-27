@@ -295,7 +295,7 @@ Upper start debounce:
 
 Upper/lower values and minimum band sizes are validated in the config flow (phase-dependent).
 
-Max Peak avg:
+### Max Peak avg:
 - This is an optional lower threshold that can be set outside the config flow.
 - This value is used to set an import limit.
 - When set it overrides the ECO thresholds, but only applies when it is stricter than the currently active lower threshold; otherwise it has no effect.
