@@ -3,7 +3,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=release)](https://github.com/KriVaTri/EVCM/releases)
 
 ### This custom integration is about plugging your EV into your wallbox and forgetting about it.
-### You don’t have to worry about consuming excessive grid energy or pausing charging when conditions aren’t good (e.g. low solar surplus).  
+### You don’t have to worry about consuming excessive grid energy or pausing charging when conditions aren’t good.  
 ### EVCM helps Home Assistant charge one or more electric vehicles only when it makes sense and is flexible in how you set it up.
 
 ---
