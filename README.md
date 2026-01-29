@@ -10,7 +10,8 @@
 
 ## What does it actually do?
 
-- Starts charging when there is enough excess power (solar export / surplus)
+- Allows users to automatically start and stop EV charging based on their preferences (with or without solar export)
+- Starts charging when there is enough available power
 - Pauses charging when you start importing too much from the grid
 - Slowly turns the charging amps up or down to match what you have available
 - Can stop at a chosen battery percentage (SoC limit)
