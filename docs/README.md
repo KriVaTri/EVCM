@@ -369,14 +369,29 @@ EVCM communicates phase switch requests via the Home Assistant event bus:
 
 **Example automation trigger:**
 ```yaml
+alias: "EVCM Wallbox Phase Switch"
+description: "Switches phase mode based on EVCM phase switch requests"
+condition:                                                                              # optional if you have more then one EVCM entry
+  - condition: template                                                                 # optional if you have more then one EVCM entry
+    value_template: "{{ trigger.event.data.entry_id == '01KD9YEA5P0ZCKEGMKESVBMTTX' }}" # optional if you have more then one EVCM entry
 trigger:
   - platform: event
-    event_type: PHASE_SWITCH_REQUEST_EVENT
-    event_data:
-      phase: "1p"
+    event_type: evcm_phase_switch_request
 action:
-  - service: [your_wallbox.switch_to_single_phase]
-    # ... your specific wallbox commands
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.target == '1p' }}"
+        sequence:
+          - service: [your_service]
+            target: [your_target]
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.event.data.target == '3p' }}"
+        sequence:
+          - service: [your_service]
+            target: [your_target]
+mode: single
 ```
 
 #### Mode selector
