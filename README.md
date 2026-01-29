@@ -65,7 +65,7 @@ If your charger is controlled through a **high‑latency and/or rate‑limited p
 - repeated commands because state updates arrive late,
 
 **Recommendation:** prefer local control when possible. If you must use a cloud integration,
-instructions are available in: [docs/README.md](docs/README.md#5-compatibility-and-required-entities)
+instructions are available in: [docs/README.md](docs/README.md#5-compatibility-and-required-entities) chapter 5.
     
 ---
 
