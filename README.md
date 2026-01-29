@@ -13,7 +13,7 @@
 - Allows users to automatically start and stop EV charging based on their preferences (with or without solar export)
 - Starts charging when there is enough available power
 - Pauses charging when you start importing too much from the grid
-- Slowly turns the charging amps up or down to match what you have available
+- Turns the charging amps up or down to match what you have available
 - Can stop at a chosen battery percentage (SoC limit)
 - Can restrict charging to a time window (planner)
 - Can handle more than one wallbox with or without a priority order (who gets to charge first)
