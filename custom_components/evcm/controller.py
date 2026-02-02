@@ -303,6 +303,8 @@ class EVLoadController:
         self._phase_last_requested_target: Optional[str] = None
         self._phase_last_request_ts: Optional[float] = None
         self._phase_notify_active: bool = False
+        self._candidate_1p_to_3p = None
+        self._candidate_3p_to_1p = None
 
         # Phase switching: cooldown (persisted, no queue)
         self._phase_switch_lock: asyncio.Lock = asyncio.Lock()
@@ -1797,12 +1799,18 @@ class EVLoadController:
         return int(v * 60)
 
     def _auto_clear_candidate_1p_to_3p(self) -> None:
-        self._auto_1p_to_3p_candidate_since_utc = None
-        self._auto_1p_to_3p_reset_since_ts = None
+        if self._auto_1p_to_3p_candidate_since_utc is not None or self._auto_1p_to_3p_reset_since_ts is not None:
+            self._auto_1p_to_3p_candidate_since_utc = None
+            self._auto_1p_to_3p_reset_since_ts = None
+            return True
+        return False
 
     def _auto_clear_candidate_3p_to_1p(self) -> None:
-        self._auto_3p_to_1p_candidate_since_utc = None
-        self._auto_3p_to_1p_reset_since_ts = None
+        if self._auto_3p_to_1p_candidate_since_utc is not None or self._auto_3p_to_1p_reset_since_ts is not None:
+            self._auto_3p_to_1p_candidate_since_utc = None
+            self._auto_3p_to_1p_reset_since_ts = None
+            return True
+        return False
 
     def _auto_set_stop_reason_below_lower(self) -> None:
         self._auto_last_stop_reason = AUTO_STOP_REASON_BELOW_LOWER
@@ -1862,10 +1870,24 @@ class EVLoadController:
         return False
 
     def _auto_upper_3p(self) -> float:
+        """Return the effective 3p upper threshold for auto phase switching."""
+        ext = self._ext_import_limit_w
         eff = _effective_config(self.entry)
+        
         if self.get_mode(MODE_ECO):
-            return float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
-        return float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
+            configured_upper = float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
+            base_lower = self._eco_on_lower
+        else:
+            configured_upper = float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
+            base_lower = self._eco_off_lower
+
+        # Check if max peak override would apply in 3p mode
+        if ext and ext > 0:
+            ext_lower = float(-ext)
+            if ext_lower > float(base_lower):
+                return float(ext_lower + self._profile_min_band_w())
+        
+        return configured_upper
 
     def _auto_upper_alt(self) -> float:
         eff = _effective_config(self.entry)
@@ -1925,32 +1947,32 @@ class EVLoadController:
             return (dt_util.utcnow() - since_utc).total_seconds() >= float(self._auto_delay_seconds())
         except Exception:
             return False
-
+            
     async def _auto_evaluate_and_maybe_switch(self) -> None:
-        """Evaluate stopped-based Auto switching (persistent timers)."""
         try:
             if self._auto_blocked():
-                self._auto_clear_candidate_1p_to_3p()
-                self._auto_clear_candidate_3p_to_1p()
-                self._create_task(self._save_unified_state_debounced())
+                changed_1 = self._auto_clear_candidate_1p_to_3p()
+                changed_2 = self._auto_clear_candidate_3p_to_1p()
+                if changed_1 or changed_2:
+                    self._create_task(self._save_unified_state_debounced())
                 return
 
             net = self._get_net_power_w()
             chg = self._get_charge_power_w()
             cur_a = await self._get_current_setting_a()
 
-            # 1p -> 3p: max current + headroom >= upper_3p + margin
-            headroom = None
+            # 1p -> 3p check
+            expected_grid_after_switch = None
             if net is not None and chg is not None:
-                headroom = float(net) + float(chg)
+                expected_grid_after_switch = float(net) + float(chg) - float(MIN_BAND_400)
 
             cond_1p_to_3p = (
                 self._phase_feedback_value == "1p"
                 and self.get_mode(MODE_START_STOP)
                 and self._is_cable_connected()
                 and self._auto_is_at_max_current(cur_a)
-                and headroom is not None
-                and headroom >= (self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W))
+                and expected_grid_after_switch is not None
+                and expected_grid_after_switch >= (self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W))
             )
 
             new_since, new_reset, changed = self._auto_candidate_update(
@@ -3454,9 +3476,10 @@ class EVLoadController:
         
         For wallbox-controlled: always follow feedback directly (no mismatch concept).
         For integration-controlled: fallback to 3p (primary/conservative) when uncertain.
-        """
+        """        
         if not self._phase_switch_supported():
             return False
+    
         
         # Wallbox-controlled: always follow feedback directly
         if self._is_wallbox_controlled_phase_switch():
@@ -3491,7 +3514,12 @@ class EVLoadController:
 
     def _current_upper(self) -> float:
         if self._max_peak_override_active():
-            return float(self._current_lower() + self._profile_min_band_w())
+            # Use correct min_band based on current phase mode
+            if self._use_alt_thresholds():
+                min_band = MIN_BAND_230  # 1p band
+            else:
+                min_band = self._profile_min_band_w()  # configured profile band
+            return float(self._current_lower() + min_band)
 
         if self._use_alt_thresholds():
             eff = _effective_config(self.entry)
