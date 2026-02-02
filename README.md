@@ -14,7 +14,7 @@
 - Starts charging when there is enough available power
 - Pauses charging when you start importing too much from the grid
 - Turns the charging amps up or down to match what you have available
-- Can stop at a chosen battery percentage (SoC limit)
+- Can stop at a chosen EV battery percentage (EV SoC limit)
 - Can restrict charging to a time window (planner)
 - Can handle more than one wallbox with or without a priority order (who gets to charge first)
 - Lets you force charging manually if you just want to plug in and go
