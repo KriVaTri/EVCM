@@ -20,7 +20,7 @@
 - Lets you force charging manually if you just want to plug in and go
 - Supports phase switching for even better load balancing
 
-You set a few numbers and switches; it does the boring part.
+You set a few numbers and switches; EVCM does the rest (aka the boring part).
 
 ---
 
