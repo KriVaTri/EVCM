@@ -427,7 +427,7 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
 - Current profile is 1P
 - Charging is **active**
 - Current is at the configured **maximum** (wallbox is charging at full 1P capacity)
-- Net power + charge power exceeds the 3P upper threshold with margin:
+- Net power + charge power exceeds the 3P upper threshold with 1000W margin:
   
   `(net_power + charge_power) ≥ (upper_3p + safety_margin)`
 
