@@ -69,7 +69,7 @@ instructions are available in: [docs/README.md](docs/README.md#5-compatibility-a
     
 ---
 
-![HACS](https://github.com/user-attachments/assets/f79a4da1-876b-45f3-82a7-89537f0afacb) ## Installation 
+## ![HACS](https://github.com/user-attachments/assets/f79a4da1-876b-45f3-82a7-89537f0afacb) Installation 
 
 1. Via HACS: search for "EVCM", download and restart Home Assistant
 2. Or manual: copy `custom_components/evcm/` into your Home Assistant `config` directory and restart
