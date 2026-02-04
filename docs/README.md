@@ -622,8 +622,8 @@ These sensors show the currently active thresholds based on your settings and cu
 | **Start threshold** | Shows at what net power level charging will start/resume. Displays the upper threshold, adjusted for current phase mode. |
 
 Both sensors display easy readable values:
-- Positive values show as "Xw export" (excess solar)
-- Negative values show as "Xw import" (grid consumption)
+- Positive values show as "..W export" (excess solar)
+- Negative values show as "..W import" (grid consumption)
 
 **Automatic updates:** These sensors automatically update when related settings change, including:
 - ECO mode toggle
@@ -643,7 +643,7 @@ Both sensors display easy readable values:
 
 | Sensor | Description |
 |--------|-------------|
-| **Phase mode** | Shows the current phase status (1p/3p/Unknown/Switching to Xp) |
+| **Phase mode** | Shows the current phase status (1p/3p/Unknown/Switching to 1p/3p) |
 
 **Attributes:**
 - `mismatch`: Whether there is a mismatch between expected and actual phase
