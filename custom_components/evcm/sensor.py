@@ -206,7 +206,7 @@ class _StopThresholdSensor(SensorEntity):
 
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:car-brake-alert"
+    _attr_icon = "mdi:pause"
 
     def __init__(
         self,
@@ -290,7 +290,7 @@ class _StartThresholdSensor(SensorEntity):
 
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:car-electric"
+    _attr_icon = "mdi:play"
 
     def __init__(
         self,
