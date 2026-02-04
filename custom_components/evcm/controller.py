@@ -1816,12 +1816,14 @@ class EVLoadController:
         self._auto_last_stop_reason = AUTO_STOP_REASON_BELOW_LOWER
         self._auto_last_stop_ts_utc = dt_util.utcnow()
         self._create_task(self._save_unified_state_debounced())
+        self._notify_mode_listeners()
 
     def _auto_clear_stop_reason(self) -> None:
         if self._auto_last_stop_reason is not None or self._auto_last_stop_ts_utc is not None:
             self._auto_last_stop_reason = None
             self._auto_last_stop_ts_utc = None
             self._create_task(self._save_unified_state_debounced())
+            self._notify_mode_listeners()
 
     def _auto_blocked(self) -> bool:
         # Feature gating
@@ -2499,6 +2501,7 @@ class EVLoadController:
             # Re-apply hysteresis with new thresholds
             self._create_task(self._hysteresis_apply())
             self._evaluate_missing_and_start_no_data_timer()
+            self._notify_mode_listeners()
 
     # ---------------- Helper: profile min band ----------------
     def _profile_min_band_w(self) -> int:
