@@ -603,7 +603,7 @@ These sensors display the configured threshold values from your settings:
 | **ECO off upper** | Upper threshold when ECO mode is OFF (W) |
 | **ECO off lower** | Lower threshold when ECO mode is OFF (W) |
 
-*When phase switching is supported, additional ALT threshold sensors are available:*
+*When phase switching is selected, additional ALT threshold sensors are available:*
 
 | Sensor | Description |
 |--------|-------------|
@@ -621,7 +621,7 @@ These sensors show the currently active thresholds based on your settings and cu
 | **Stop threshold** | Shows at what net power level charging will stop. Displays the lower threshold or max peak limit if active. |
 | **Start threshold** | Shows at what net power level charging will start/resume. Displays the upper threshold, adjusted for current phase mode. |
 
-Both sensors display human-readable values:
+Both sensors display easy readable values:
 - Positive values show as "Xw export" (excess solar)
 - Negative values show as "Xw import" (grid consumption)
 
@@ -639,7 +639,7 @@ Both sensors display human-readable values:
 
 ### Phase Mode Sensor
 
-*Only available when phase switching is supported.*
+*Only available when phase switching is selected.*
 
 | Sensor | Description |
 |--------|-------------|
@@ -653,7 +653,7 @@ Both sensors display human-readable values:
 
 ### Phase Switch Threshold Sensor
 
-*Only available when phase switching is supported.*
+*Only available when phase switching is selected.*
 
 | Sensor | Description |
 |--------|-------------|
