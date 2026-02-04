@@ -35,14 +35,15 @@ This document explains how EVCM works, how to configure it, and which entities i
 - [13. SoC limit](#13-soc-limit)  
 - [14. Planner window (start/stop datetimes)](#14-planner-window-startstop-datetimes)  
 - [15. Sustain timers (below-lower / no-data)](#15-sustain-timers-below-lower--no-data)  
-- [16. Manual vs Auto modes](#16-manual-vs-auto-modes)  
-- [17. Events and bus signals](#17-events-and-bus-signals)  
-- [18. Entities overview](#18-entities-overview)  
-- [19. Unknown/unavailable detection](#19-unknownunavailable-detection)
-- [20. Safety: external charging_enable OFF detection](#20-safety-external-charging_enable-OFF-detection) 
-- [21. Common scenarios](#21-common-scenarios)  
-- [22. Use Case Example](#22-use-case-example)
-- [23. Troubleshooting](#23-troubleshooting)
+- [16. Manual vs Auto modes](#16-manual-vs-auto-modes)
+- [17. Diagnostic sensors](#17-diagnostic-sensors)
+- [18. Events and bus signals](#18-events-and-bus-signals)  
+- [19. Entities overview](#19-entities-overview)  
+- [20. Unknown/unavailable detection](#20-unknownunavailable-detection)
+- [21. Safety: external charging_enable OFF detection](#21-safety-external-charging_enable-OFF-detection) 
+- [22. Common scenarios](#22-common-scenarios)  
+- [23. Use Case Example](#23-use-case-example)
+- [24. Troubleshooting](#24-troubleshooting)
 
 ---
 
@@ -587,7 +588,104 @@ Manual is intended for “force charging” scenarios but still respects planner
 
 ---
 
-## 17) Events and bus signals
+## 17) Diagnostic sensors
+
+EVCM provides several diagnostic sensors to help monitor the charging thresholds and phase switching behavior.
+
+#### Configured Threshold Sensors
+
+These sensors display the configured threshold values from your settings:
+
+| Sensor | Description |
+|--------|-------------|
+| **ECO on upper** | Upper threshold when ECO mode is ON (W) |
+| **ECO on lower** | Lower threshold when ECO mode is ON (W) |
+| **ECO off upper** | Upper threshold when ECO mode is OFF (W) |
+| **ECO off lower** | Lower threshold when ECO mode is OFF (W) |
+
+*When phase switching is supported, additional ALT threshold sensors are available:*
+
+| Sensor | Description |
+|--------|-------------|
+| **ALT ECO on upper** | Upper threshold for 1p mode when ECO is ON (W) |
+| **ALT ECO on lower** | Lower threshold for 1p mode when ECO is ON (W) |
+| **ALT ECO off upper** | Upper threshold for 1p mode when ECO is OFF (W) |
+| **ALT ECO off lower** | Lower threshold for 1p mode when ECO is OFF (W) |
+
+#### Dynamic Threshold Sensors
+
+These sensors show the currently active thresholds based on your settings and current state:
+
+| Sensor | Description |
+|--------|-------------|
+| **Stop threshold** | Shows at what net power level charging will stop. Displays the lower threshold or max peak limit if active. |
+| **Start threshold** | Shows at what net power level charging will start/resume. Displays the upper threshold, adjusted for current phase mode. |
+
+Both sensors display human-readable values:
+- Positive values show as "Xw export" (excess solar)
+- Negative values show as "Xw import" (grid consumption)
+
+**Automatic updates:** These sensors automatically update when related settings change, including:
+- ECO mode toggle
+- Max peak avg limit changes
+- Phase mode changes (1p/3p)
+- Threshold configuration changes
+
+**Attributes:**
+- `mode`: Current mode (eco_on/eco_off)
+- `max_peak_active`: Whether max peak override is active
+- `current_phase`: Current phase feedback (1p/3p)
+- `raw_value_w`: Raw threshold value in watts
+
+#### Phase Mode Sensor
+
+*Only available when phase switching is supported.*
+
+| Sensor | Description |
+|--------|-------------|
+| **Phase mode** | Shows the current phase status (1p/3p/Unknown/Switching to Xp) |
+
+**Attributes:**
+- `mismatch`: Whether there is a mismatch between expected and actual phase
+- `fallback_active`: Whether fallback mode is active due to unknown/mismatched phase
+- `cooldown_active`: Whether phase switch cooldown is active
+- `cooldown_remaining_s`: Seconds remaining in cooldown
+
+#### Phase Switch Threshold Sensor
+
+*Only available when phase switching is supported.*
+
+| Sensor | Description |
+|--------|-------------|
+| **Phase switch threshold** | Shows at what net power level a phase switch will occur. |
+
+The sensor adapts based on current phase:
+- **In 1p mode**: Shows when switch to 3p will occur (e.g., "Switch to 3p at 4320W export (est. 230V)")
+- **In 3p mode**: Shows when switch to 1p will occur (e.g., "Switch to 1p at 1500W export")
+
+The 1p→3p threshold is estimated based on configured max current × 230V for consistency.
+
+**Automatic updates:** This sensor automatically updates when related settings change, including:
+- Auto phase switch mode toggle
+- ECO mode toggle
+- Max peak avg limit changes
+- Phase feedback changes (1p/3p)
+- Threshold configuration changes (including ALT thresholds)
+
+**Attributes:**
+- `mode`: Current mode (eco_on/eco_off)
+- `max_peak_active`: Whether max peak override is active
+- `current_phase`: Current phase feedback (1p/3p)
+- `auto_enabled`: Whether auto phase switching is enabled
+- `target_phase`: The phase it would switch to (1p/3p)
+- `raw_value_w`: Raw threshold value in watts
+- `estimation_note`: Shows the estimation basis (e.g., "Based on 16A × 230V")
+
+**Note:** When auto phase switching is disabled, the sensor displays "Auto phase switch off". When phase feedback is unknown, the sensor displays "Unknown phase".
+
+---
+
+## 18) Events and bus signals
 
 - `evcm_priority_refresh`: fired on any global priority/order/mode change and on each order update. UI and entities (numbers/switches) listen to this to refresh immediately.
 - `evcm_unknown_state`: emitted when unknown/unavailable sensor states are encountered (with debouncing and startup grace).
@@ -597,7 +695,7 @@ You can observe these in Developer Tools → Events.
 
 ---
 
-## 18) Entities overview
+## 19) Entities overview
 
 Per entry:
 
@@ -629,7 +727,7 @@ You will also configure references to:
 
 ---
 
-## 19) Unknown/unavailable detection
+## 20) Unknown/unavailable detection
 
 The controller reports unknown/unavailable transitions per sensor with:
 - A startup grace period to reduce noise
@@ -640,7 +738,7 @@ Warnings include the entity ID and context and are also mirrored to the event bu
 
 ---
 
-## 20) Safety: external `charging_enable` OFF detection
+## 21) Safety: external `charging_enable` OFF detection
 
 EVCM detects when the configured `charging_enable` switch is turned **OFF externally** (by the wallbox itself, the vendor app, another integration, or an automation) while the EV cable is connected.
 (If you have an automation that toggles the same `charging_enable` entity, consider using the EVCM **Start/Stop** switch instead).
@@ -663,7 +761,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 21) Common scenarios
+## 22) Common scenarios
 
 1. Two wallboxes, Priority OFF  
    Both may regulate independently (no priority gating).
@@ -693,7 +791,7 @@ EVCM also recreates the relevant notification(s) after a Home Assistant restart/
 
 ---
 
-## 22) Use Case Example
+## 23) Use Case Example
 
 Use Case Example with ECO mode ON:
 
@@ -712,7 +810,7 @@ When ECO mode is turned on, the "ECO ON" upper and lower thresholds will be used
 
 ---
 
-## 23) Troubleshooting
+## 24) Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |--------|--------------|-----|
