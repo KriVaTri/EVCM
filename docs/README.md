@@ -417,7 +417,7 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
   
   `upper_alt_1p ≤ net_power < upper_3p`
 
-- This condition must remain stable for **at least** the configured minimum delay (default: 15 minutes, user-configurable)
+- This condition must remain stable for **at least** the configured minimum delay (default: 5 minutes, user-configurable)
 
 **Reasoning**: There is sufficient surplus to start charging in 1P mode, but not enough to start in 3P mode.
 
