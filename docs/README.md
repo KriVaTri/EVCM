@@ -592,7 +592,7 @@ Manual is intended for “force charging” scenarios but still respects planner
 
 EVCM provides several diagnostic sensors to help monitor the charging thresholds and phase switching behavior.
 
-#### Configured Threshold Sensors
+### Configured Threshold Sensors
 
 These sensors display the configured threshold values from your settings:
 
@@ -612,7 +612,7 @@ These sensors display the configured threshold values from your settings:
 | **ALT ECO off upper** | Upper threshold for 1p mode when ECO is OFF (W) |
 | **ALT ECO off lower** | Lower threshold for 1p mode when ECO is OFF (W) |
 
-#### Dynamic Threshold Sensors
+### Dynamic Threshold Sensors
 
 These sensors show the currently active thresholds based on your settings and current state:
 
@@ -637,7 +637,7 @@ Both sensors display human-readable values:
 - `current_phase`: Current phase feedback (1p/3p)
 - `raw_value_w`: Raw threshold value in watts
 
-#### Phase Mode Sensor
+### Phase Mode Sensor
 
 *Only available when phase switching is supported.*
 
@@ -651,7 +651,7 @@ Both sensors display human-readable values:
 - `cooldown_active`: Whether phase switch cooldown is active
 - `cooldown_remaining_s`: Seconds remaining in cooldown
 
-#### Phase Switch Threshold Sensor
+### Phase Switch Threshold Sensor
 
 *Only available when phase switching is supported.*
 
