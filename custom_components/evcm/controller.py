@@ -142,6 +142,8 @@ from .const import (
     PHASE_CONTROL_INTEGRATION,
     PHASE_CONTROL_WALLBOX,
     DEFAULT_PHASE_SWITCH_CONTROL_MODE,
+    NET_POWER_TARGET_MAX_W,
+    NET_POWER_TARGET_LOWER_MARGIN_W,
 )
 
 from .priority import (
@@ -1437,7 +1439,11 @@ class EVLoadController:
             
             # Sync notification timer
             self._reconcile_phase_feedback_notify()
-            
+
+            # Clamp net power target if thresholds changed due to phase switch
+            if self._clamp_net_power_target_if_needed():
+                self._create_task(self._save_unified_state_debounced())
+
             # Apply control changes
             self._create_task(self._hysteresis_apply())
             self._start_regulation_loop_if_needed()
@@ -1490,6 +1496,10 @@ class EVLoadController:
             # Now that mismatch is resolved, sync timer/notification again
             self._reconcile_phase_feedback_notify()
 
+        # Clamp net power target if thresholds changed due to phase switch
+        if self._clamp_net_power_target_if_needed():
+            self._create_task(self._save_unified_state_debounced())
+            
         # Apply control changes
         self._create_task(self._hysteresis_apply())
         self._start_regulation_loop_if_needed()
@@ -1962,11 +1972,15 @@ class EVLoadController:
             net = self._get_net_power_w()
             chg = self._get_charge_power_w()
             cur_a = await self._get_current_setting_a()
+            target = float(self._net_power_target_w)
 
             # 1p -> 3p check
             expected_grid_after_switch = None
             if net is not None and chg is not None:
                 expected_grid_after_switch = float(net) + float(chg) - float(MIN_BAND_400)
+
+            # Include target in the threshold calculation
+            threshold_1p_to_3p = self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W) + target
 
             cond_1p_to_3p = (
                 self._phase_feedback_value == "1p"
@@ -1974,7 +1988,7 @@ class EVLoadController:
                 and self._is_cable_connected()
                 and self._auto_is_at_max_current(cur_a)
                 and expected_grid_after_switch is not None
-                and expected_grid_after_switch >= (self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W))
+                and expected_grid_after_switch >= threshold_1p_to_3p
             )
 
             new_since, new_reset, changed = self._auto_candidate_update(
@@ -1998,10 +2012,13 @@ class EVLoadController:
                 if ok:
                     return
 
-            # 3p -> 1p: stopped by below_lower + net >= upper_alt
+            # 3p -> 1p: stopped by below_lower + net >= upper_alt + target
             charging_enabled = self._is_charging_enabled()
             stop_reason_ok = (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
-            net_ok_for_1p_start = (net is not None and net >= self._auto_upper_alt())
+            
+            # Include target in the threshold calculation
+            threshold_3p_to_1p = self._auto_upper_alt() + target
+            net_ok_for_1p_start = (net is not None and net >= threshold_3p_to_1p)
 
             # If charging can resume now (or is already above upper), resuming has priority over switching to 1p.
             resume_has_priority = False
@@ -2081,16 +2098,43 @@ class EVLoadController:
     def net_power_target_w(self) -> int:
         return int(self._net_power_target_w)
 
+    def _net_power_target_min_w(self) -> int:
+        """Return the minimum allowed net_power_target_w based on current lower threshold."""
+        try:
+            lower = self._current_lower()
+            return int(lower) + NET_POWER_TARGET_LOWER_MARGIN_W
+        except Exception:
+            return NET_POWER_TARGET_MIN_W  # fallback to absolute min
+
+    def _clamp_net_power_target_if_needed(self) -> bool:
+        """Clamp net_power_target_w if it's below the dynamic minimum. Returns True if clamped."""
+        min_allowed = self._net_power_target_min_w()
+        if self._net_power_target_w < min_allowed:
+            old_val = self._net_power_target_w
+            self._net_power_target_w = min_allowed
+            _LOGGER.info(
+                "Net power target clamped: %sW -> %sW (lower threshold requires >= %sW)",
+                old_val, min_allowed, min_allowed
+            )
+            return True
+        return False
+
     def set_net_power_target_w(self, value: Optional[float | int]):
+        """Set net power target, enforcing dynamic minimum based on lower threshold."""
         try:
             iv = int(round(float(value if value is not None else DEFAULT_NET_POWER_TARGET_W)))
         except Exception:
             iv = DEFAULT_NET_POWER_TARGET_W
-        iv = max(-50000, min(50000, iv))
+        
+        # Apply dynamic minimum based on current lower threshold
+        min_allowed = self._net_power_target_min_w()
+        iv = max(min_allowed, min(NET_POWER_TARGET_MAX_W, iv))
+        
         if iv != self._net_power_target_w:
             self._net_power_target_w = iv
             self._create_task(self._save_unified_state_debounced())
-            _LOGGER.info("Net power target updated → %s W", iv)
+            _LOGGER.info("Net power target updated → %s W (min allowed: %s W)", iv, min_allowed)
+            self._notify_mode_listeners()
 
     # ---------------- Planner / SoC getters-setters ----------------
     @property
@@ -2496,6 +2540,9 @@ class EVLoadController:
         new_val = iv if iv > 0 else None
         if new_val != self._ext_import_limit_w:
             self._ext_import_limit_w = new_val
+            # Clamp net power target if max peak override became active/stricter
+            if self._clamp_net_power_target_if_needed():
+                pass  # save will happen below anyway
             self._create_task(self._save_unified_state_debounced())
             _LOGGER.info("External import limit (Max peak avg) updated → %s W", new_val or 0)
             # Re-apply hysteresis with new thresholds
@@ -4795,6 +4842,9 @@ class EVLoadController:
                 if previous != enabled and not self.get_mode(MODE_MANUAL_AUTO):
                     self._create_task(self._hysteresis_apply(preserve_current=True))
                 if previous != enabled:
+                    # Clamp net power target if needed after ECO mode change
+                    if self._clamp_net_power_target_if_needed():
+                        self._create_task(self._save_unified_state_debounced())
                     self._create_task(self._save_unified_state_debounced())
                     _LOGGER.debug("ECO toggle -> %s", enabled)
                 return
