@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Optional
+from typing import Optional, Callable
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.util import slugify
@@ -183,7 +183,6 @@ class _NetPowerTargetNumber(NumberEntity):
     _attr_entity_category = EntityCategory.CONFIG
     _attr_mode = NumberMode.BOX
     _attr_native_step = NET_POWER_TARGET_STEP_W
-    _attr_native_min_value = NET_POWER_TARGET_MIN_W
     _attr_native_max_value = NET_POWER_TARGET_MAX_W
     _attr_native_unit_of_measurement = "W"
     _attr_suggested_display_precision = 0
@@ -195,6 +194,20 @@ class _NetPowerTargetNumber(NumberEntity):
         self._attr_unique_id = f"{DOMAIN}_{entry_id}_net_power_target"
         self._attr_name = friendly_name
         self.entity_id = f"number.{object_id}"
+        self._unsub_mode_listener: Optional[Callable[[], None]] = None
+
+    async def async_added_to_hass(self) -> None:
+        @callback
+        def _on_update() -> None:
+            self.async_write_ha_state()
+
+        self._unsub_mode_listener = self._controller.add_mode_listener(_on_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_mode_listener:
+            with contextlib.suppress(Exception):
+                self._unsub_mode_listener()
+            self._unsub_mode_listener = None
 
     @property
     def device_info(self):
@@ -208,8 +221,28 @@ class _NetPowerTargetNumber(NumberEntity):
         }
 
     @property
+    def native_min_value(self) -> float:
+        """Dynamic minimum based on current lower threshold + margin."""
+        try:
+            return float(self._controller._net_power_target_min_w())
+        except Exception:
+            return float(NET_POWER_TARGET_MIN_W)
+
+    @property
     def native_value(self) -> Optional[float]:
         return int(self._controller.net_power_target_w)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose the dynamic minimum for debugging/UI."""
+        attrs = {}
+        try:
+            attrs["dynamic_min_w"] = self._controller._net_power_target_min_w()
+            attrs["current_lower_threshold_w"] = int(self._controller._current_lower())
+            attrs["margin_w"] = 300
+        except Exception:
+            pass
+        return attrs
 
     async def async_set_native_value(self, value: float) -> None:
         self._controller.set_net_power_target_w(value)
