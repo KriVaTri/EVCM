@@ -224,6 +224,8 @@ Net Power Target (fine regulation center):
 
 - Availability: exposed as a Number entity per entry (“net power target”) and persisted; can be changed live without restarting.
 
+⚠️ **Net power target is dynamically clamped to ensure it stays at least 300W above the active lower threshold (ECO on/off, ALT thresholds, or max peak). This prevents charging from stopping unexpectedly when the target would fall below the stop threshold** 
+
 ---
 
 ## 7) Mode switches (per entry)
