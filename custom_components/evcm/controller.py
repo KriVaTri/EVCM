@@ -2026,7 +2026,7 @@ class EVLoadController:
             net_ok_for_1p_start = (net is not None and net >= threshold_3p_to_1p)
             
             # Get explicit 3p upper threshold
-            upper_3p = self._get_3p_upper_threshold() + target
+            upper_3p = self._get_3p_upper_threshold()
 
             # Existing: stopped because below lower threshold
             stopped_below_lower = (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
