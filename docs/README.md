@@ -402,7 +402,7 @@ mode: single
 
 When integration-controlled mode is active, EVCM provides a **phase mode selector** per entry with three options:
 
-1. **Auto**: EVCM automatically determines when to switch phases based on grid conditions (see switching logic below)
+1. **Auto**: EVCM automatically determines when to switch phases based on grid conditions and thresholds(see switching logic below)
 2. **Force 3P**: Lock to 3-phase mode; no automatic switching occurs
 3. **Force 1P**: Lock to 1-phase mode; no automatic switching occurs
 
@@ -410,7 +410,7 @@ When integration-controlled mode is active, EVCM provides a **phase mode selecto
 
 #### Automatic phase switching logic (Auto mode)
 
-When the selector is set to **Auto**, EVCM evaluates switching opportunities based on grid conditions:
+When the selector is set to **Auto**, EVCM evaluates switching opportunities based on grid conditions and thresholds:
 
 ##### Switching from 3P → 1P
 
