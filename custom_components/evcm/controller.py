@@ -2012,13 +2012,37 @@ class EVLoadController:
                 if ok:
                     return
 
-            # 3p -> 1p: stopped by below_lower + net >= upper_alt + target
+            # 3p -> 1p check
             charging_enabled = self._is_charging_enabled()
-            stop_reason_ok = (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
             
-            # Include target in the threshold calculation
+            # Include target in the threshold calculations
             threshold_3p_to_1p = self._auto_upper_alt() + target
             net_ok_for_1p_start = (net is not None and net >= threshold_3p_to_1p)
+            
+            # Get explicit 3p upper threshold
+            upper_3p = self._get_3p_upper_threshold() + target
+
+            # Existing: stopped because below lower threshold
+            stopped_below_lower = (self._auto_last_stop_reason == AUTO_STOP_REASON_BELOW_LOWER)
+
+            # Can't start because below upper threshold
+            blocked_below_upper = (
+                self._phase_feedback_value == "3p"
+                and self.get_mode(MODE_START_STOP)
+                and self._is_cable_connected()
+                and (not charging_enabled)
+                and self._auto_last_stop_reason is None
+                and self._planner_window_allows_start()
+                and self._soc_allows_start()
+                and self._priority_allowed_cache
+                and self._essential_data_available()
+                and net is not None
+                and net < upper_3p
+                and net >= threshold_3p_to_1p
+            )
+
+            # Either condition triggers 3p -> 1p switch consideration
+            insufficient_power_for_3p = stopped_below_lower or blocked_below_upper
 
             # If charging can resume now (or is already above upper), resuming has priority over switching to 1p.
             resume_has_priority = False
@@ -2055,25 +2079,18 @@ class EVLoadController:
                 and self.get_mode(MODE_START_STOP)
                 and self._is_cable_connected()
                 and (not charging_enabled)
-                and stop_reason_ok
+                and insufficient_power_for_3p
                 and net_ok_for_1p_start
             )
-
-            # IMPORTANT: for 3p->1p we want "continuous true for delay",
-            # so reset immediately when the condition is not active.
-            changed = False
-            if cond_3p_to_1p:
-                if self._auto_3p_to_1p_candidate_since_utc is None:
-                    self._auto_3p_to_1p_candidate_since_utc = dt_util.utcnow()
-                    self._auto_3p_to_1p_reset_since_ts = None
-                    changed = True
-            else:
-                if (
-                    self._auto_3p_to_1p_candidate_since_utc is not None
-                    or self._auto_3p_to_1p_reset_since_ts is not None
-                ):
-                    self._auto_clear_candidate_3p_to_1p()
-                    changed = True
+            
+            # Use candidate update with reset delay (same as 1p->3p)
+            new_since, new_reset, changed = self._auto_candidate_update(
+                active=bool(cond_3p_to_1p),
+                since_utc=self._auto_3p_to_1p_candidate_since_utc,
+                reset_since_ts=self._auto_3p_to_1p_reset_since_ts,
+            )
+            self._auto_3p_to_1p_candidate_since_utc = new_since
+            self._auto_3p_to_1p_reset_since_ts = new_reset
 
             if changed:
                 self._create_task(self._save_unified_state_debounced())
@@ -2092,6 +2109,19 @@ class EVLoadController:
             return
         except Exception:
             _LOGGER.debug("Auto phase switch evaluate failed", exc_info=True)
+
+    def _get_3p_upper_threshold(self) -> float:
+        """Get the 3p upper threshold regardless of current phase."""
+        ext = self._ext_import_limit_w
+        if ext and ext > 0:
+            # Max peak active: 3p upper = -max_peak + MIN_BAND_400
+            return float(-ext) + float(MIN_BAND_400)
+        
+        # Use configured 3p thresholds (not ALT)
+        eff = _effective_config(self.entry)
+        if self.get_mode(MODE_ECO):
+            return float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
+        return float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
 
     # ---------------- Net power target ----------------
     @property
@@ -3317,6 +3347,7 @@ class EVLoadController:
         self._start_regulation_loop_if_needed()
         self._start_resume_monitor_if_needed()
         self._evaluate_missing_and_start_no_data_timer()
+        self._create_task(self._auto_evaluate_and_maybe_switch())
 
     async def _on_cable_disconnected(self, initial: bool = False):
         if self._ce_external_off_latched or self._ce_external_last_off_ts or self._ce_external_last_on_ts:
