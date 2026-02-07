@@ -456,13 +456,8 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
                 if not auto_enabled:
                     return "Auto phase switch off"
                 
-                upper_alt = self._controller._auto_upper_alt()
-                target = float(self._controller.net_power_target_w)
-                
-                # For 3p -> 1p, the threshold is upper_alt, but target also affects when we'd start in 1p
-                # The stop happened due to below_lower, and we wait for net >= upper_alt to switch
-                # Target doesn't directly affect this threshold, but affects where we regulate to after switch
-                threshold = upper_alt + target
+                # Use effective 1p upper (respects max peak), without target
+                threshold = self._controller._get_effective_1p_upper()
                 
                 return f"Switch to 1p at {_format_threshold_w(threshold)}"
 
@@ -491,11 +486,11 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
                 attrs["target_phase"] = "3p"
                 attrs["estimation_note"] = f"Based on {self._controller._max_current_a()}A × 230V + target {int(target)}W"
             elif feedback == "3p":
-                upper_alt = self._controller._auto_upper_alt()
-                threshold = upper_alt + target
+                threshold = self._controller._get_effective_1p_upper()
                 attrs["raw_value_w"] = int(round(threshold))
                 attrs["target_phase"] = "1p"
-                attrs["estimation_note"] = f"upper_alt + target {int(target)}W"
+                attrs["max_peak_w"] = self._controller._ext_import_limit_w
+                attrs["estimation_note"] = "effective 1p upper (respects max peak)"
             else:
                 attrs["target_phase"] = None
         except Exception:
