@@ -1920,35 +1920,40 @@ class EVLoadController:
         since_utc: Optional[datetime],
         reset_since_ts: Optional[float],
     ) -> tuple[Optional[datetime], Optional[float], bool]:
-        """Debounced candidate timer update (T_reset=180s)."""
-        now_mono = time.monotonic()
+        """Update candidate tracking with reset delay logic.
+        
+        When condition becomes active after being in reset period,
+        the timer restarts fresh to prevent premature switches.
+        """
+        now = dt_util.utcnow()
+        now_ts = time.time()
         changed = False
 
         if active:
-            if reset_since_ts is not None:
-                reset_since_ts = None
-                changed = True
+            # Condition is active - start or continue tracking
             if since_utc is None:
-                since_utc = dt_util.utcnow()
+                since_utc = now
                 changed = True
-            return since_utc, reset_since_ts, changed
-
-        # Not active
-        if since_utc is None:
+            # If we were in reset period, restart the timer fresh
             if reset_since_ts is not None:
+                since_utc = now  # Reset the timer!
                 reset_since_ts = None
                 changed = True
-            return None, reset_since_ts, changed
-
-        if reset_since_ts is None:
-            reset_since_ts = now_mono
-            changed = True
-            return since_utc, reset_since_ts, changed
-
-        if (now_mono - float(reset_since_ts)) >= float(AUTO_RESET_DEBOUNCE_SECONDS):
-            since_utc = None
-            reset_since_ts = None
-            changed = True
+        else:
+            # Condition not active - start reset delay if we have a candidate
+            if since_utc is not None:
+                if reset_since_ts is None:
+                    # Start reset delay timer
+                    reset_since_ts = now_ts
+                    changed = True
+                else:
+                    # Check if reset delay has elapsed
+                    elapsed = now_ts - reset_since_ts
+                    if elapsed >= AUTO_PHASE_SWITCH_RESET_DELAY_S:
+                        # Reset delay elapsed - clear candidate
+                        since_utc = None
+                        reset_since_ts = None
+                        changed = True
 
         return since_utc, reset_since_ts, changed
 
@@ -2014,9 +2019,10 @@ class EVLoadController:
 
             # 3p -> 1p check
             charging_enabled = self._is_charging_enabled()
-            
-            # Include target in the threshold calculations
-            threshold_3p_to_1p = self._auto_upper_alt() + target
+
+            # Use effective 1p upper (respects max peak), WITHOUT target
+            # Target is not relevant here - we just need enough power to start 1p
+            threshold_3p_to_1p = self._get_effective_1p_upper()
             net_ok_for_1p_start = (net is not None and net >= threshold_3p_to_1p)
             
             # Get explicit 3p upper threshold
@@ -2122,6 +2128,29 @@ class EVLoadController:
         if self.get_mode(MODE_ECO):
             return float(eff.get(CONF_ECO_ON_UPPER, DEFAULT_ECO_ON_UPPER))
         return float(eff.get(CONF_ECO_OFF_UPPER, DEFAULT_ECO_OFF_UPPER))
+
+    def _get_effective_1p_upper(self) -> float:
+        """Return effective 1p upper threshold for 3p->1p switch decision.
+        
+        Respects max peak override if it's stricter than configured 1p thresholds.
+        """
+        ext = self._ext_import_limit_w
+        eff = _effective_config(self.entry)
+        
+        if self.get_mode(MODE_ECO):
+            base_lower = float(eff.get(CONF_ECO_ON_LOWER_ALT, DEFAULT_ECO_ON_LOWER_ALT))
+            base_upper = float(eff.get(CONF_ECO_ON_UPPER_ALT, DEFAULT_ECO_ON_UPPER_ALT))
+        else:
+            base_lower = float(eff.get(CONF_ECO_OFF_LOWER_ALT, DEFAULT_ECO_OFF_LOWER_ALT))
+            base_upper = float(eff.get(CONF_ECO_OFF_UPPER_ALT, DEFAULT_ECO_OFF_UPPER_ALT))
+        
+        # Check if max peak override applies for 1p
+        if ext and ext > 0:
+            ext_lower = float(-ext)
+            if ext_lower > base_lower:  # max peak is stricter
+                return ext_lower + float(MIN_BAND_230)
+        
+        return base_upper
 
     # ---------------- Net power target ----------------
     @property
