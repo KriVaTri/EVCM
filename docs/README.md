@@ -425,6 +425,8 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
 
 **Reasoning**: There is sufficient surplus to start charging in 1P mode, but not enough to start in 3P mode.
 
+⚠️ **When switching from 3-phase to 1-phase, the net power target is NOT included in the threshold calculation. Switching to 1p is considered to be a "fallback" because there is less grid power available and a switch to 1p is desired as soon as possible.**
+
 ##### Switching from 1P → 3P
 
 **Conditions:**
@@ -438,6 +440,8 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
 - This condition must remain stable for **at least** the configured minimum delay
 
 **Reasoning**: There is significantly more surplus available; switching to 3P would utilize the excess solar/export power more efficiently.
+
+⚠️ **When switching from 1-phase to 3-phase, the net power target IS included in the threshold calculation. Switching to 3p is considered to be an "upgrade" because there is more grid power available.** 
 
 #### Timing constraints
 
