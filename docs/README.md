@@ -445,7 +445,7 @@ When the selector is set to **Auto**, EVCM evaluates switching opportunities bas
 
 #### Timing constraints
 
-- Minimum delay: **1 minute** (configurable during setup/options)
+- Minimum delay: **5 minutes** (configurable during setup/options)
 - A minimum delay of 5 minutes is advised to prevent rapid switching (wear on contactors, grid instability)
 - The timer **resets** if conditions no longer match before the delay elapses
 
