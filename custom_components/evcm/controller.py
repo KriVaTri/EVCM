@@ -1164,6 +1164,10 @@ class EVLoadController:
         self._create_task(self._hysteresis_apply())
 
     def _phase_cooldown_active(self) -> bool:
+        # No cooldown needed when cable is disconnected
+        if not self._is_cable_connected():
+            return False
+            
         until = self._phase_cooldown_until_utc
         return bool(until and dt_util.utcnow() < until)
 
@@ -1201,7 +1205,14 @@ class EVLoadController:
             _LOGGER.debug("Failed to persist phase cooldown state", exc_info=True)
 
     def _notify_phase_switch_cooldown_active(self) -> None:
-        """User-facing notification when a request is rejected due to cooldown."""
+        """User-facing notification when a request is rejected due to cooldown.
+        
+        Suppressed when cable is disconnected (no need to notify user).
+        """
+        # Suppress notification when cable is disconnected
+        if not self._is_cable_connected():
+            return
+            
         try:
             device_name = self._device_name_for_notify()
             timeout_s = int(float(PHASE_SWITCH_COOLDOWN_SECONDS))
