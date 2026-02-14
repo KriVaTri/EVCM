@@ -175,11 +175,11 @@ If your charger integration has 5s end‑to‑end delay (command → effect/stat
 
 - Adjustable in the integration options (UI):
   - Upper start debounce (s): 6s (instead of the default 3s)
-- Currently only adjustable in code (custom_components/evcm/controller.py):
-  - CONNECT_DEBOUNCE_SECONDS: 5s
-  - EXPORT_SUSTAIN_SECONDS: 10s
-  - PLANNER_MONITOR_INTERVAL: 3s
-  - CE_MIN_TOGGLE_INTERVAL_S: 10s
+- Currently only adjustable in code (custom_components/evcm/const.py):
+  - CONNECT_DEBOUNCE_SECONDS: 1s
+  - EXPORT_SUSTAIN_SECONDS: 5s
+  - PLANNER_MONITOR_INTERVAL: 1.0s
+  - CE_MIN_TOGGLE_INTERVAL_S: 0.5s
 
 ---
 
