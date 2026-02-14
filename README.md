@@ -58,12 +58,7 @@ you can create **Template Helpers** in Home Assistant to bridge the gap.
 EVCM is a feedback loop (measure → decide → command → observe).  
 It was primarily developed and tested with **local, low‑latency control** (e.g. MQTT on the LAN, typically sub‑second end‑to‑end).
 
-If your charger is controlled through a **high‑latency and/or rate‑limited path** (e.g. a cloud API), you may experience:
-- slower response to changing conditions (export/import),
-- less accurate regulation,
-- repeated commands because state updates arrive late,
-
-**Recommendation:** prefer local control when possible. If you must use a cloud integration and are experiencing latency issues,
+If your charger is controlled through a **high‑latency and/or rate‑limited path** (e.g. a cloud API) and are experiencing latency issues:
 instructions are available in: [docs/README.md](docs/README.md#5-compatibility-and-required-entities) chapter 5.
     
 ---
