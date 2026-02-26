@@ -82,14 +82,15 @@ async def async_get_priority_mode_enabled(hass: HomeAssistant) -> bool:
     return bool(data.get("priority_mode_enabled", False))
 
 
-async def async_set_priority_mode_enabled(hass: HomeAssistant, enabled: bool) -> None:
+async def async_set_priority_mode_enabled(hass: HomeAssistant, enabled: bool, *, notify: bool = True) -> None:
     data = await _load_raw(hass)
     prev = bool(data.get("priority_mode_enabled", False))
     data["priority_mode_enabled"] = bool(enabled)
     await _save_raw(hass, data)
     if prev != enabled:
-        _LOGGER.debug("Priority mode set to %s", enabled)
-        _notify_all_priority_change(hass)
+        _LOGGER.debug("Priority mode set to %s (notify=%s)", enabled, notify)
+        if notify:
+            _notify_all_priority_change(hass)
 
 
 # ---------- Current / Preferred ----------
@@ -319,6 +320,64 @@ async def async_align_current_with_order(hass: HomeAssistant) -> None:
     await _set_priority_value(hass, None)
 
 
+async def async_enable_priority_mode_safe(hass: HomeAssistant) -> None:
+    # Check if already enabled - just align in that case
+    if await async_get_priority_mode_enabled(hass):
+        _LOGGER.debug("Priority mode already enabled, just aligning")
+        await async_align_current_with_order(hass)
+        return
+    
+    order = await async_get_order(hass)
+    if not order:
+        # No entries, just enable with notification
+        await async_set_priority_mode_enabled(hass, True)
+        return
+    
+    # Find first eligible entry (in priority order)
+    first_eligible = _first_eligible_by_order(hass, order)
+    
+    # Find any entry that is currently charging (as fallback if none eligible yet)
+    currently_charging = None
+    if not first_eligible:
+        for entry_id in order:
+            ctl = _controller_for(hass, entry_id)
+            if ctl:
+                try:
+                    is_charging = (
+                        getattr(ctl, '_charging_active', False) or
+                        (hasattr(ctl, '_is_charging_enabled') and ctl._is_charging_enabled()) or
+                        (hasattr(ctl, '_charging_detected_now') and ctl._charging_detected_now())
+                    )
+                    is_connected = hasattr(ctl, 'is_cable_connected') and ctl.is_cable_connected()
+                    if is_charging and is_connected:
+                        currently_charging = entry_id
+                        break
+                except Exception:
+                    _LOGGER.debug("Failed to check charging status for %s", entry_id, exc_info=True)
+    
+    # Determine target: eligible > currently_charging > first in order
+    target_priority = first_eligible or currently_charging or order[0]
+    
+    _LOGGER.info(
+        "Enabling priority mode safely: setting priority to %s (eligible=%s, charging=%s)",
+        _name_for(hass, target_priority),
+        _name_for(hass, first_eligible) if first_eligible else None,
+        _name_for(hass, currently_charging) if currently_charging else None,
+    )
+    
+    # Step 1: Update priority_entry_id BEFORE enabling priority mode
+    data = await _load_raw(hass)
+    data["priority_entry_id"] = target_priority
+    data["preferred_priority_entry_id"] = target_priority
+    await _save_raw(hass, data)
+    
+    # Step 2: Enable priority mode WITHOUT notifying (we'll do that after)
+    await async_set_priority_mode_enabled(hass, True, notify=False)
+    
+    # Step 3: Now notify - controllers will see the correct priority immediately
+    _notify_all_priority_change(hass)
+
+
 # ---------- Advance ----------
 async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: str) -> None:
     entries = _existing_entry_ids(hass)
@@ -351,7 +410,7 @@ async def async_advance_priority_to_next(hass: HomeAssistant, current_entry_id: 
         await _set_priority_value(hass, fallback)
         return
     if not _is_paused(hass, current_entry_id):
-        _LOGGER.info("No eligible next; retain current %s (not paused)",
+        _LOGGER.debug("No eligible next; retain current %s (not paused)",
                     _name_for(hass, current_entry_id))
         return
     _LOGGER.info("No eligible/unpaused next; clearing priority")
