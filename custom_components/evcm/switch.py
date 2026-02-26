@@ -20,6 +20,7 @@ from .priority import (
     async_set_priority,
     async_align_current_with_order,
     async_advance_priority_to_next,
+    async_enable_priority_mode_safe,
 )
 
 
@@ -94,12 +95,8 @@ class PriorityChargingSwitchPerEntry(SwitchEntity):
         return self._is_on
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await async_set_priority_mode_enabled(self.hass, True)
+        await async_enable_priority_mode_safe(self.hass)
         await self._refresh()
-        order = await async_get_order(self.hass)
-        current = await async_get_priority(self.hass)
-        if not current and order:
-            await async_set_priority(self.hass, order[0])
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
