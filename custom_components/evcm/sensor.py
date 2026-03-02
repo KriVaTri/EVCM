@@ -465,7 +465,7 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
                 # Use effective 1p upper (respects max peak), without target
                 threshold = self._controller._get_effective_1p_upper()
                 
-                return f"Switch to 1p at {_format_threshold_w(threshold)}"
+                return f"Switch to 1p at ±{_format_threshold_w(threshold)}"
 
         except Exception:
             return None
