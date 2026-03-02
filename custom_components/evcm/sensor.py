@@ -443,13 +443,19 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
                 if not auto_enabled:
                     return "Auto phase switch off"
                 
+                # threshold = upper_3p + margin + target - max_1p_power
                 upper_3p = self._controller._auto_upper_3p()
                 max_1p_power = float(self._controller._max_current_a()) * 230.0
                 target = float(self._controller.net_power_target_w)
                 
-                threshold = upper_3p + float(AUTO_1P_TO_3P_MARGIN_W) + float(MIN_BAND_400) - max_1p_power + target
+                threshold = (
+                    upper_3p
+                    + float(AUTO_1P_TO_3P_MARGIN_W)
+                    + target
+                    - max_1p_power
+                )
                 
-                return f"Switch to 3p at ±{_format_threshold_w(threshold)}"
+                return f"Switch to 3p at {_format_threshold_w(threshold)}"
 
             # 3p -> 1p scenario
             if feedback == "3p":
@@ -476,21 +482,30 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
 
             # Add raw threshold values
             feedback = self._controller._phase_feedback_value
-            target = float(self._controller.net_power_target_w)
             
             if feedback == "1p":
                 upper_3p = self._controller._auto_upper_3p()
                 max_1p_power = float(self._controller._max_current_a()) * 230.0
-                threshold = upper_3p + float(AUTO_1P_TO_3P_MARGIN_W) + float(MIN_BAND_400) - max_1p_power + target
+                target = float(self._controller.net_power_target_w)
+                
+                threshold = (
+                    upper_3p
+                    + float(AUTO_1P_TO_3P_MARGIN_W)
+                    + target
+                    - max_1p_power
+                )
+                
                 attrs["raw_value_w"] = int(round(threshold))
                 attrs["target_phase"] = "3p"
-                attrs["estimation_note"] = f"Based on {self._controller._max_current_a()}A × 230V + target {int(target)}W"
+                attrs["upper_3p_w"] = int(round(upper_3p))
+                attrs["margin_w"] = int(AUTO_1P_TO_3P_MARGIN_W)
+                attrs["max_1p_power_w"] = int(round(max_1p_power))
+                attrs["max_current_a"] = self._controller._max_current_a()
             elif feedback == "3p":
                 threshold = self._controller._get_effective_1p_upper()
                 attrs["raw_value_w"] = int(round(threshold))
                 attrs["target_phase"] = "1p"
                 attrs["max_peak_w"] = self._controller._ext_import_limit_w
-                attrs["estimation_note"] = "effective 1p upper (respects max peak)"
             else:
                 attrs["target_phase"] = None
         except Exception:
