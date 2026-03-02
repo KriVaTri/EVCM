@@ -1991,20 +1991,26 @@ class EVLoadController:
             target = float(self._net_power_target_w)
 
             # 1p -> 3p check
-            expected_grid_after_switch = None
-            if net is not None and chg is not None:
-                expected_grid_after_switch = float(net) + float(chg) - float(MIN_BAND_400)
+            # Calculate threshold: we need enough surplus to start 3p
+            # Surplus = net + current_1p_charge_power (what we'd have if we stopped charging)
+            # Required = upper_3p + margin + target
+            # So: net >= upper_3p + margin + target - max_1p_power
+            max_1p_power = float(self._max_current_a()) * 230.0
 
-            # Include target in the threshold calculation
-            threshold_1p_to_3p = self._auto_upper_3p() + float(AUTO_1P_TO_3P_MARGIN_W) + target
+            threshold_1p_to_3p = (
+                self._auto_upper_3p()
+                + float(AUTO_1P_TO_3P_MARGIN_W)
+                + target
+                - max_1p_power
+            )
 
             cond_1p_to_3p = (
                 self._phase_feedback_value == "1p"
                 and self.get_mode(MODE_START_STOP)
                 and self._is_cable_connected()
                 and self._auto_is_at_max_current(cur_a)
-                and expected_grid_after_switch is not None
-                and expected_grid_after_switch >= threshold_1p_to_3p
+                and net is not None
+                and net >= threshold_1p_to_3p
             )
 
             new_since, new_reset, changed = self._auto_candidate_update(
