@@ -1,4 +1,4 @@
-# <img width="50" height="50" align="absmiddle" alt="icon" src="https://github.com/user-attachments/assets/d9a99ab1-73b1-494e-80e4-7c5995a40bad" /> EVCM – EV Charging Manager for Home Assistant
+# <img width="50" height="50" align="center" alt="icon" src="https://github.com/user-attachments/assets/d9a99ab1-73b1-494e-80e4-7c5995a40bad" /> EVCM – EV Charging Manager for Home Assistant
 
 [![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=release)](https://github.com/KriVaTri/EVCM/releases)
 
