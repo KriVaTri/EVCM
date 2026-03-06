@@ -250,16 +250,18 @@ class _StopThresholdSensor(SensorEntity):
         """Return (threshold_w, max_peak_active).
         
         Stop threshold:
-        - If max_peak > 0: stop at max_peak import (convert to negative internally)
-        - Else: use eco lower threshold
+        - If max_peak override is active (max_peak lower is stricter than eco lower):
+            stop at max_peak import
+        - Else: use eco lower threshold (which is more conservative)
         """
-        ext = self._controller._ext_import_limit_w
+        # Check if max peak override is actually active (same logic as controller)
+        max_peak_active = self._controller._max_peak_override_active()
         
-        # Max peak is set and > 0 (stored as positive, but means import = negative)
-        if ext is not None and ext > 0:
+        if max_peak_active:
+            ext = self._controller._ext_import_limit_w
             return (float(-ext), True)
         
-        # No max peak: use eco lower
+        # Max peak not active (or not set), use configured lower
         lower = self._controller._current_lower()
         return (lower, False)
 
@@ -343,21 +345,21 @@ class _StartThresholdSensor(SensorEntity):
         """Return (threshold_w, max_peak_active).
         
         Start threshold:
-        - If max_peak > 0: start at -max_peak + min_band
-            - 1p: -2000 + 1700 = -300 (300W import)
-            - 3p: -2000 + 4500 = 2500 (2500W export)
-        - Else: use eco upper threshold
+        - If max_peak override is active (max_peak lower is stricter than eco lower):
+            - 1p: -max_peak + 1700W
+            - 3p: -max_peak + 4500W
+        - Else: use eco upper threshold (eco lower is more conservative)
         """
-        ext = self._controller._ext_import_limit_w
+        # Check if max peak override is actually active (same logic as controller)
+        max_peak_active = self._controller._max_peak_override_active()
         
-        # Max peak is set and > 0 (stored as positive, but means import = negative)
-        if ext is not None and ext > 0:
+        if max_peak_active:
+            ext = self._controller._ext_import_limit_w
             min_band = self._get_min_band()
-            # -max_peak + min_band
             threshold = float(-ext) + float(min_band)
             return (threshold, True)
         
-        # No max peak: use eco upper
+        # Max peak not active (or not set), use configured upper
         upper = self._controller._current_upper()
         return (upper, False)
 
@@ -465,7 +467,7 @@ class _PhaseSwitchThresholdSensor(SensorEntity):
                 # Use effective 1p upper (respects max peak), without target
                 threshold = self._controller._get_effective_1p_upper()
                 
-                return f"Switch to 1p at ±{_format_threshold_w(threshold)}"
+                return f"Switch to 1p at {_format_threshold_w(threshold)}"
 
         except Exception:
             return None
