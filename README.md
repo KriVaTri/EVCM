@@ -1,6 +1,6 @@
 # <img width="50" height="50" align="center" alt="icon" src="https://github.com/user-attachments/assets/d9a99ab1-73b1-494e-80e4-7c5995a40bad" /> EVCM – EV Charging Manager for Home Assistant
 
-[![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=release)](https://github.com/KriVaTri/EVCM/releases)
+[![Latest Release](https://img.shields.io/github/v/release/KriVaTri/evcm?include_prereleases&label=latest%20release)](https://github.com/KriVaTri/EVCM/releases)
 
 ### This custom integration is about plugging your EV into your wallbox and forgetting about it.
 ### You don’t have to worry about consuming excessive grid energy or pausing charging when conditions aren’t good.  
