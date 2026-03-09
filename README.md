@@ -22,7 +22,7 @@
 
 You set a few numbers and switches; EVCM does the rest (aka the boring part).
 
-> If help is needed to set things up, don't hesitate to open up an issue or discussion and I will gladly help.
+> NOTE: If help is needed to set things up, don't hesitate to open up an issue or discussion and I will gladly help.
 
 ---
 
