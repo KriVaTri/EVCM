@@ -119,7 +119,7 @@ During the config flow:
 
 ## License
 
-MIT
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
