@@ -366,6 +366,9 @@ class EVLoadController:
         self._ce_external_last_off_ts: Optional[float] = None
         self._ce_external_last_on_ts: Optional[float] = None
 
+        # Shutdown guard - prevents false external OFF detection during reload
+        self._shutting_down: bool = False
+
         # Task tracking for cleanup
         self._tracked_tasks: set[asyncio.Task] = set()
 
@@ -2395,6 +2398,8 @@ class EVLoadController:
         self._schedule_startup_grace_recheck()
 
     async def async_shutdown(self):
+        # Mark as shutting down FIRST to prevent false external OFF detection
+        self._shutting_down = True
         # Cancel all tracked background tasks first
         cancelled_count = self._cancel_tracked_tasks()
         # Cancel pending debounced save
@@ -2874,116 +2879,139 @@ class EVLoadController:
             if self._is_known_state(new):
                 now = time.monotonic()
 
-                # External ON: if user/MQTT turns charging_enable ON while latched, clear the latch
-                if str(new.state) == STATE_ON and self._ce_external_off_latched:
-                    self._ce_external_off_latched = False
-                    self._ce_on_blocked_logged = False
-                    self._ce_external_last_on_ts = dt_util.utcnow().timestamp()
-                    self._create_task(self._persist_external_off_state())
-                    
-                    if self._is_wallbox_controlled_phase_switch():
-                        _LOGGER.debug(
-                            "EVCM %s: external OFF latch cleared by external ON (wallbox-controlled mode, entity=%s)",
-                            self._log_name(), self._charging_enable_entity
-                        )
-                    else:
-                        _LOGGER.warning(
-                            "EVCM %s: external OFF latch cleared by external ON (entity=%s)",
-                            self._log_name(), self._charging_enable_entity
-                        )
+                # SKIP external OFF/ON detection entirely during shutdown/reload
+                # This prevents false positives when the wallbox hasn't finished responding
+                # to our last command before the config entry reloads
+                if self._shutting_down:
+                    _LOGGER.debug(
+                        "EVCM %s: Skipping external OFF/ON detection (shutdown in progress)",
+                        self._log_name()
+                    )
+                else:
+                    # External ON: if user/MQTT turns charging_enable ON while latched, clear the latch
+                    if str(new.state) == STATE_ON and self._ce_external_off_latched:
+                        self._ce_external_off_latched = False
+                        self._ce_on_blocked_logged = False
+                        self._ce_external_last_on_ts = dt_util.utcnow().timestamp()
+                        self._create_task(self._persist_external_off_state())
+                        
+                        if self._is_wallbox_controlled_phase_switch():
+                            _LOGGER.debug(
+                                "EVCM %s: external OFF latch cleared by external ON (wallbox-controlled mode, entity=%s)",
+                                self._log_name(), self._charging_enable_entity
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "EVCM %s: external OFF latch cleared by external ON (entity=%s)",
+                                self._log_name(), self._charging_enable_entity
+                            )
 
-                    # Suppress notification in wallbox-controlled phase switch mode
-                    if not self._is_wallbox_controlled_phase_switch():
-                        msg = (
-                            f"External charging_enable ON detected for {device_name}\n"
-                            f"Last external ON: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                            "External OFF latch cleared: yes\n"
-                            "Charging can resume."
-                        )
-                        self._notify_persistent_fire_and_forget(
-                            "EVCM: External ON detected",
-                            msg,
-                            self._external_on_notification_id(),
-                        )
+                        # Suppress notification in wallbox-controlled phase switch mode
+                        if not self._is_wallbox_controlled_phase_switch():
+                            msg = (
+                                f"External charging_enable ON detected for {device_name}\n"
+                                f"Last external ON: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                "External OFF latch cleared: yes\n"
+                                "Charging can resume."
+                            )
+                            self._notify_persistent_fire_and_forget(
+                                "EVCM: External ON detected",
+                                msg,
+                                self._external_on_notification_id(),
+                            )
 
-                # External OFF detection + latch (only when EVCM wants ON now)
-                if str(new.state) == STATE_OFF:
-                    wants_on_now = False
-                    try:
-                        wants_on_now = bool(self._ce_wants_enable_on_now())
-                    except Exception:
+                    # External OFF detection + latch (only when EVCM wants ON now)
+                    if str(new.state) == STATE_OFF:
                         wants_on_now = False
+                        try:
+                            wants_on_now = bool(self._ce_wants_enable_on_now())
+                        except Exception:
+                            wants_on_now = False
 
-                    if wants_on_now:
-                        # "Expected OFF" if our last intent was OFF very recently (race protection).
-                        expected_off_recent = (
-                            self._ce_last_intent_desired is False
-                            and (now - float(self._ce_last_intent_ts or 0.0)) <= 5.0
-                        )
+                        if wants_on_now:
+                            # "Expected OFF" if our last intent was OFF very recently (race protection).
+                            expected_off_recent = (
+                                self._ce_last_intent_desired is False
+                                and (now - float(self._ce_last_intent_ts or 0.0)) <= 5.0
+                            )
+                            
+                            # ALSO skip if we recently sent ON - wallbox may still be transitioning
+                            # This prevents false external OFF detection when wallbox is slow to respond
+                            recent_on_sent = (
+                                self._ce_last_intent_desired is True
+                                and (now - float(self._ce_last_intent_ts or 0.0)) <= 10.0
+                                and not self._charging_detected_now()
+                            )
 
-                        if not expected_off_recent:
-                            cable_connected = False
-                            try:
-                                cable_connected = self._is_cable_connected()
-                            except Exception:
+                            if not expected_off_recent and not recent_on_sent:
                                 cable_connected = False
+                                try:
+                                    cable_connected = self._is_cable_connected()
+                                except Exception:
+                                    cable_connected = False
 
-                            if cable_connected:
-                                # Latch on ANY external OFF (we did not recently intend OFF)
-                                if not self._ce_external_off_latched:
-                                    self._ce_external_off_latched = True
-                                    self._ce_on_blocked_logged = False
-                                    self._ce_external_last_off_ts = dt_util.utcnow().timestamp()
-                                    self._create_task(self._persist_external_off_state())
-                                    last_intent = (
-                                        "on" if self._ce_last_intent_desired is True
-                                        else "off" if self._ce_last_intent_desired is False
-                                        else "unknown"
-                                    )
-                                    age_s = now - float(self._ce_last_intent_ts or 0.0)
-                                    
-                                    if self._is_wallbox_controlled_phase_switch():
-                                        _LOGGER.debug(
-                                            "EVCM %s: external OFF latched (wallbox-controlled mode). entity=%s last_intent=%s age=%.1fs",
-                                            self._log_name(), 
-                                            self._charging_enable_entity, 
-                                            last_intent, age_s
+                                if cable_connected:
+                                    # Latch on ANY external OFF (we did not recently intend OFF)
+                                    if not self._ce_external_off_latched:
+                                        self._ce_external_off_latched = True
+                                        self._ce_on_blocked_logged = False
+                                        self._ce_external_last_off_ts = dt_util.utcnow().timestamp()
+                                        self._create_task(self._persist_external_off_state())
+                                        last_intent = (
+                                            "on" if self._ce_last_intent_desired is True
+                                            else "off" if self._ce_last_intent_desired is False
+                                            else "unknown"
                                         )
-                                    else:
-                                        _LOGGER.warning(
-                                            "EVCM %s: external OFF latched until cable disconnect. entity=%s last_intent=%s age=%.1fs",
-                                            self._log_name(), 
-                                            self._charging_enable_entity, 
-                                            last_intent, age_s
-                                        )
+                                        age_s = now - float(self._ce_last_intent_ts or 0.0)
+                                        
+                                        if self._is_wallbox_controlled_phase_switch():
+                                            _LOGGER.debug(
+                                                "EVCM %s: external OFF latched (wallbox-controlled mode). entity=%s last_intent=%s age=%.1fs",
+                                                self._log_name(), 
+                                                self._charging_enable_entity, 
+                                                last_intent, age_s
+                                            )
+                                        else:
+                                            _LOGGER.warning(
+                                                "EVCM %s: external OFF latched until cable disconnect. entity=%s last_intent=%s age=%.1fs",
+                                                self._log_name(), 
+                                                self._charging_enable_entity, 
+                                                last_intent, age_s
+                                            )
 
-                                # Notify OFF (dedupe with cooldown)
-                                if (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
-                                    self._ce_external_off_last_notify_ts = now
+                                    # Notify OFF (dedupe with cooldown)
+                                    if (now - float(self._ce_external_off_last_notify_ts or 0.0)) >= 30.0:
+                                        self._ce_external_off_last_notify_ts = now
 
-                                    # Suppress notification in wallbox-controlled phase switch mode
-                                    if self._is_wallbox_controlled_phase_switch():
-                                        _LOGGER.debug(
-                                            "EVCM %s: External OFF notification suppressed (wallbox-controlled mode)",
-                                            self._log_name()
-                                        )
-                                    else:
-                                        msg = (
-                                            f"External charging_enable OFF detected for {device_name}\n"
-                                            f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                            f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
-                                            "To reset, unplug the EV.\n"
-                                            "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
-                                            "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
-                                        )
+                                        # Suppress notification in wallbox-controlled phase switch mode
+                                        if self._is_wallbox_controlled_phase_switch():
+                                            _LOGGER.debug(
+                                                "EVCM %s: External OFF notification suppressed (wallbox-controlled mode)",
+                                                self._log_name()
+                                            )
+                                        else:
+                                            msg = (
+                                                f"External charging_enable OFF detected for {device_name}\n"
+                                                f"Last external OFF: {dt_util.as_local(dt_util.utcnow()).strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                                f"Latched until cable disconnect: {'yes' if self._ce_external_off_latched else 'no'}\n"
+                                                "To reset, unplug the EV.\n"
+                                                "You can manually turn charging_enable ON but this is NOT ADVISED!\n"
+                                                "If you did not manually turn charging_enable OFF, check your wallbox before turning back ON."
+                                            )
 
-                                        _LOGGER.warning("EVCM %s: %s", self._log_name(), msg.replace("\n", " | "))
+                                            _LOGGER.warning("EVCM %s: %s", self._log_name(), msg.replace("\n", " | "))
 
-                                        self._notify_persistent_fire_and_forget(
-                                            "EVCM: External OFF detected",
-                                            msg,
-                                            self._external_off_notification_id(),
-                                        )
+                                            self._notify_persistent_fire_and_forget(
+                                                "EVCM: External OFF detected",
+                                                msg,
+                                                self._external_off_notification_id(),
+                                            )
+                            elif recent_on_sent:
+                                _LOGGER.debug(
+                                    "EVCM %s: Ignoring OFF state - recently sent ON (%.1fs ago), wallbox may still be transitioning",
+                                    self._log_name(),
+                                    now - float(self._ce_last_intent_ts or 0.0)
+                                )
 
         except Exception:
             _LOGGER.debug("EVCM: external OFF detection/latch failed", exc_info=True)
