@@ -144,6 +144,7 @@ from .const import (
     DEFAULT_PHASE_SWITCH_CONTROL_MODE,
     NET_POWER_TARGET_MAX_W,
     NET_POWER_TARGET_LOWER_MARGIN_W,
+    AUTO_PHASE_SWITCH_RESET_DELAY_S,
 )
 
 from .priority import (
