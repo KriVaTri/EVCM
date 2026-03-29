@@ -285,6 +285,7 @@ CE_MIN_TOGGLE_INTERVAL_S = 0.5
 
 # Auto phase switching timing
 AUTO_RESET_DEBOUNCE_SECONDS = 180.0
+AUTO_PHASE_SWITCH_RESET_DELAY_S = 30
 AUTO_1P_TO_3P_MARGIN_W = 1000
 
 # Charging detection thresholds
