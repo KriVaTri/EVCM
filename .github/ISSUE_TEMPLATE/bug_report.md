@@ -27,5 +27,12 @@ If applicable, add screenshots to help explain your problem.
  - Version: [e.g. 2026.5.0]
  - Host machine: [Rpi, NUC]
 
+**EVCM**
+- Version: 
+
+**Wallbox**
+- make: 
+- model: 
+
 **Additional context**
 Add any other context about the problem here.
